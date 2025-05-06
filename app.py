@@ -1,8 +1,6 @@
 import streamlit as st
 import pandas as pd
 import numpy as np
-from sklearn.decomposition import PCA
-import hdbscan
 import matplotlib.pyplot as plt
 import io
 from PIL import Image
