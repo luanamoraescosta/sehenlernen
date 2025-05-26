@@ -309,81 +309,122 @@ elif st.session_state["active_section"] == "Feature Selection":
         
         # Histogram Black&White / Colour
         with st.expander("Histogram Black&White / Colour"):
-            st.write("Select image and histogram type:")
+            st.write("Select image(s) and histogram type:")
             col1, col2 = st.columns(2)
             with col1:
                 histogram_type = st.selectbox("Histogram Type", ["Black & White", "Colour"], key="histogram_type_select")
-            with col2:
-                selected_image_index = st.selectbox("Select Image", 
-                                                  options=list(range(len(st.session_state["images"]))), 
-                                                  key="image_selector_select")
+                process_all_images = st.checkbox("Process all images", key="process_all_images")
+            
+            if process_all_images:
+                selected_images = st.session_state["images"]
+            else:
+                st.write("Select image to analyze:")
+                col1, col2, col3, col4, col5, col6 = st.columns(6)
+                selected_images = []
+                with col1:
+                    if st.button("Image 1", key="image_1_button"):
+                        selected_images.append(st.session_state["images"][0])
+                with col2:
+                    if st.button("Image 2", key="image_2_button"):
+                        selected_images.append(st.session_state["images"][1])
+                with col3:
+                    if st.button("Image 3", key="image_3_button"):
+                        selected_images.append(st.session_state["images"][2])
+                with col4:
+                    if st.button("Image 4", key="image_4_button"):
+                        selected_images.append(st.session_state["images"][3])
+                with col5:
+                    if st.button("Image 5", key="image_5_button"):
+                        selected_images.append(st.session_state["images"][4])
+                with col6:
+                    if st.button("Image 6", key="image_6_button"):
+                        selected_images.append(st.session_state["images"][5])
             
             if st.button("Generate Histogram", key="generate_histogram_button"):
-                img = st.session_state["images"][selected_image_index]
-                if histogram_type == "Black & White":
-                    img_gray = img.convert('L')
-                    hist = np.histogram(img_gray, bins=256, range=(0, 256))[0]
+                if not selected_images:
+                    st.warning("Please select at least one image to analyze.")
                 else:
-                    img_rgb = img.convert('RGB')
-                    r, g, b = img_rgb.split()
-                    hist_r = np.histogram(r, bins=256, range=(0, 256))[0]
-                    hist_g = np.histogram(g, bins=256, range=(0, 256))[0]
-                    hist_b = np.histogram(b, bins=256, range=(0, 256))[0]
-                    hist = (hist_r, hist_g, hist_b)
-                
-                fig, ax = plt.subplots()
-                if histogram_type == "Black & White":
-                    ax.plot(hist, color='gray')
-                    ax.set_title("Grayscale Histogram")
-                else:
-                    ax.plot(hist_r, color='red', label='Red')
-                    ax.plot(hist_g, color='green', label='Green')
-                    ax.plot(hist_b, color='blue', label='Blue')
-                    ax.set_title("Color Histogram")
-                    ax.legend()
-                st.pyplot(fig)
+                    fig, axes = plt.subplots(nrows=len(selected_images), ncols=1, figsize=(10, 5*len(selected_images)))
+                    if len(selected_images) == 1:
+                        axes = [axes]
+                    
+                    for i, img in enumerate(selected_images):
+                        if histogram_type == "Black & White":
+                            img_gray = img.convert('L')
+                            hist = np.histogram(img_gray, bins=256, range=(0, 256))[0]
+                            axes[i].plot(hist, color='gray')
+                            axes[i].set_title(f"Grayscale Histogram - Image {i+1}")
+                        else:
+                            img_rgb = img.convert('RGB')
+                            r, g, b = img_rgb.split()
+                            hist_r = np.histogram(r, bins=256, range=(0, 256))[0]
+                            hist_g = np.histogram(g, bins=256, range=(0, 256))[0]
+                            hist_b = np.histogram(b, bins=256, range=(0, 256))[0]
+                            axes[i].plot(hist_r, color='red', label='Red')
+                            axes[i].plot(hist_g, color='green', label='Green')
+                            axes[i].plot(hist_b, color='blue', label='Blue')
+                            axes[i].set_title(f"Color Histogram - Image {i+1}")
+                            axes[i].legend()
+                    
+                    plt.tight_layout()
+                    st.pyplot(fig)
         
-        # k-means
+        # k-means Clustering
         with st.expander("k-means Clustering"):
-            st.write("Select images and number of clusters:")
+            st.write("Select images from the sampling results and number of clusters:")
             col1, col2 = st.columns(2)
             with col1:
                 cluster_count = st.number_input("Number of Clusters", min_value=2, max_value=10, value=2, key="cluster_count_input")
-            with col2:
-                selected_images_indices = st.multiselect("Select Images", 
-                                                       options=list(range(len(st.session_state["images"]))), 
-                                                       key="image_selector_multiselect")
+                random_state = st.number_input("Random State", min_value=0, max_value=100, value=42, key="random_state_input")
             
             if st.button("Perform k-means Clustering", key="perform_kmeans_button"):
-                if not selected_images_indices:
-                    st.warning("Please select images to cluster.")
-                else:
-                    try:
-                        from sklearn.cluster import KMeans
-                        from sklearn.preprocessing import StandardScaler
-                        
-                        # Extract features (e.g., color histograms)
-                        images = [st.session_state["images"][i] for i in selected_images_indices]
-                        features = []
-                        for img in images:
-                            img_rgb = img.convert('RGB')
-                            r, g, b = img_rgb.split()
-                            hist_r = np.histogram(r, bins=32)[0]
-                            hist_g = np.histogram(g, bins=32)[0]
-                            hist_b = np.histogram(b, bins=32)[0]
-                            features.append(np.concatenate([hist_r, hist_g, hist_b]))
-                        
-                        scaler = StandardScaler()
-                        scaled_features = scaler.fit_transform(features)
-                        
-                        kmeans = KMeans(n_clusters=cluster_count, random_state=42)
-                        cluster_labels = kmeans.fit_predict(scaled_features)
-                        
-                        st.write("Clustering Results:")
-                        for i, label in enumerate(cluster_labels):
-                            st.write(f"Image {selected_images_indices[i]+1} assigned to cluster {label}")
-                    except Exception as e:
-                        st.error(f"Error performing k-means clustering: {e}")
+                try:
+                    from sklearn.cluster import KMeans
+                    from sklearn.preprocessing import StandardScaler
+                    from sklearn.decomposition import PCA
+                    import matplotlib.pyplot as plt
+                    
+                    # Extract features from the sampled images
+                    images = st.session_state["sampled_files"] if "sampled_files" in st.session_state else st.session_state["images"]
+                    features = []
+                    for img in images:
+                        img_rgb = img.convert('RGB')
+                        r, g, b = img_rgb.split()
+                        hist_r = np.histogram(r, bins=32)[0]
+                        hist_g = np.histogram(g, bins=32)[0]
+                        hist_b = np.histogram(b, bins=32)[0]
+                        features.append(np.concatenate([hist_r, hist_g, hist_b]))
+                    
+                    scaler = StandardScaler()
+                    scaled_features = scaler.fit_transform(features)
+                    
+                    # Reduce dimensionality for visualization
+                    pca = PCA(n_components=2)
+                    pca_features = pca.fit_transform(scaled_features)
+                    
+                    # Perform k-means clustering
+                    kmeans = KMeans(n_clusters=cluster_count, random_state=random_state)
+                    cluster_labels = kmeans.fit_predict(pca_features)
+                    
+                    # Visualize clusters
+                    fig, ax = plt.subplots(figsize=(10, 6))
+                    for i in range(cluster_count):
+                        ax.scatter(pca_features[cluster_labels == i, 0], pca_features[cluster_labels == i, 1], 
+                                  label=f"Cluster {i}", alpha=0.7, s=100)
+                    ax.scatter(kmeans.cluster_centers_[:, 0], kmeans.cluster_centers_[:, 1], 
+                              marker='*', s=200, c='red', label='Centroids')
+                    ax.set_xlabel('Principal Component 1')
+                    ax.set_ylabel('Principal Component 2')
+                    ax.set_title('k-means Clustering')
+                    ax.legend()
+                    st.pyplot(fig)
+                    
+                    # Display cluster assignments
+                    st.write("Cluster Assignments:")
+                    for i, img in enumerate(images):
+                        st.write(f"Image {i+1} assigned to cluster {cluster_labels[i]}")
+                except Exception as e:
+                    st.error(f"Error performing k-means clustering: {e}")
         
         # Extract Shape Features
         with st.expander("Extract Shape Features"):
@@ -562,6 +603,7 @@ elif st.session_state["active_section"] == "Feature Selection":
 
         if st.button("Next: Statistical Analysis", key="feature_next"):
             st.session_state["active_section"] = "Statistics Analysis"
+            
 # --- Statistics Analysis ---
 elif st.session_state["active_section"] == "Statistics Analysis":
     st.header("Statistics Analysis")
