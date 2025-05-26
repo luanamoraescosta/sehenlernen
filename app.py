@@ -4,6 +4,8 @@ import numpy as np
 import matplotlib.pyplot as plt
 import io
 from PIL import Image
+from sklearn.model_selection import train_test_split
+from sklearn.model_selection import StratifiedKFold
 
 # --- Page Configuration ---
 st.set_page_config(page_title="Sehen Lernen", layout="wide")
