@@ -553,7 +553,51 @@ with st.expander("Histogram Black&White / Colour"):
                         st.write(f"Test Image {i+1}: {label}")
                 except Exception as e:
                     st.error(f"Error in Haralick texture feature extraction: {e}")
+       
+        # Extract Texture Features Co-Occurence
+        with st.expander("Extract Texture Features Co-Occurence"):
+            st.write("Select image for texture feature extraction:")
+            selected_image_index = st.selectbox("Select Image", 
+                                              options=list(range(len(st.session_state["images"]))), 
+                                              key="texture_image_selector")
+            
+            if st.button("Extract Co-Occurence Texture Features", key="extract_texture_button"):
+                img = st.session_state["images"][selected_image_index]
+                try:
+                    from skimage.feature import greycomatrix, greycoprops
+                    import numpy as np
+                    
+                    img_gray = img.convert('L')
+                    gm = greycomatrix(img_gray, distances=[1, 2], angles=[0, np.pi/4, np.pi/2, 3*np.pi/4],
+                                    levels=256, symmetric=True, normed=True)
+                    
+                    # Calculate properties
+                    contrast = greycoprops(gm, 'contrast')
+                    dissimilarity = greycoprops(gm, 'dissimilarity')
+                    homogeneity = greycoprops(gm, 'homogeneity')
+                    energy = greycoprops(gm, 'energy')
+                    correlation = greycoprops(gm, 'correlation')
+                    
+                    features = np.array([contrast.mean(), dissimilarity.mean(), homogeneity.mean(),
+                                      energy.mean(), correlation.mean()])
+                    
+                    st.write("Texture Features:")
+                    st.write(features)
+                except Exception as e:
+                    st.error(f"Error extracting co-occurence texture features: {e}")
         
+        
+        col1, col2 = st.columns([2, 1])
+        with col1:
+            if st.button("Download Result", key="feature_download_result"):
+                pass
+        with col2:
+            if st.button("Download Settings", key="feature_download_settings"):
+                pass
+
+        if st.button("Next: Statistical Analysis", key="feature_next"):
+            st.session_state["active_section"] = "Statistics Analysis"
+
             
 # --- Statistics Analysis ---
 elif st.session_state["active_section"] == "Statistics Analysis":
