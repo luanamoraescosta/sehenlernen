@@ -4,6 +4,6 @@ numpy
 matplotlib
 Pillow
 openpyxl
-skimage
+scikit-image
 scikit-learn
 requests
