@@ -307,68 +307,59 @@ elif st.session_state["active_section"] == "Feature Selection":
     else:
         st.info("Feature selection functions")
         
-        # Histogram Black&White / Colour
-        with st.expander("Histogram Black&White / Colour"):
-            st.write("Select image(s) and histogram type:")
-            col1, col2 = st.columns(2)
-            with col1:
-                histogram_type = st.selectbox("Histogram Type", ["Black & White", "Colour"], key="histogram_type_select")
-                process_all_images = st.checkbox("Process all images", key="process_all_images")
-            
-            if process_all_images:
-                selected_images = st.session_state["images"]
-            else:
-                st.write("Select image to analyze:")
-                col1, col2, col3, col4, col5, col6 = st.columns(6)
-                selected_images = []
-                with col1:
-                    if st.button("Image 1", key="image_1_button"):
-                        selected_images.append(st.session_state["images"][0])
-                with col2:
-                    if st.button("Image 2", key="image_2_button"):
-                        selected_images.append(st.session_state["images"][1])
-                with col3:
-                    if st.button("Image 3", key="image_3_button"):
-                        selected_images.append(st.session_state["images"][2])
-                with col4:
-                    if st.button("Image 4", key="image_4_button"):
-                        selected_images.append(st.session_state["images"][3])
-                with col5:
-                    if st.button("Image 5", key="image_5_button"):
-                        selected_images.append(st.session_state["images"][4])
-                with col6:
-                    if st.button("Image 6", key="image_6_button"):
-                        selected_images.append(st.session_state["images"][5])
-            
-            if st.button("Generate Histogram", key="generate_histogram_button"):
-                if not selected_images:
-                    st.warning("Please select at least one image to analyze.")
-                else:
-                    fig, axes = plt.subplots(nrows=len(selected_images), ncols=1, figsize=(10, 5*len(selected_images)))
-                    if len(selected_images) == 1:
-                        axes = [axes]
-                    
-                    for i, img in enumerate(selected_images):
-                        if histogram_type == "Black & White":
-                            img_gray = img.convert('L')
-                            hist = np.histogram(img_gray, bins=256, range=(0, 256))[0]
-                            axes[i].plot(hist, color='gray')
-                            axes[i].set_title(f"Grayscale Histogram - Image {i+1}")
-                        else:
-                            img_rgb = img.convert('RGB')
-                            r, g, b = img_rgb.split()
-                            hist_r = np.histogram(r, bins=256, range=(0, 256))[0]
-                            hist_g = np.histogram(g, bins=256, range=(0, 256))[0]
-                            hist_b = np.histogram(b, bins=256, range=(0, 256))[0]
-                            axes[i].plot(hist_r, color='red', label='Red')
-                            axes[i].plot(hist_g, color='green', label='Green')
-                            axes[i].plot(hist_b, color='blue', label='Blue')
-                            axes[i].set_title(f"Color Histogram - Image {i+1}")
-                            axes[i].legend()
-                    
-                    plt.tight_layout()
-                    st.pyplot(fig)
+        # --- Histogram Black&White / Colour ---
+with st.expander("Histogram Black&White / Colour"):
+    st.write("Select image(s) and histogram type:")
+    col1, col2 = st.columns(2)
+    with col1:
+        histogram_type = st.selectbox("Histogram Type", ["Black & White", "Colour"], key="histogram_type_select")
+        process_all_images = st.checkbox("Process all images", key="process_all_images")
+    
+    selected_images = []
+    if process_all_images:
+        selected_images = st.session_state["images"]
+    else:
+        st.write("Select image to analyze:")
+        num_columns = 6  # Número de colunas para exibir as miniaturas
+        col_list = st.columns(num_columns)
         
+        for i in range(min(len(st.session_state["images"]), num_columns)):
+            with col_list[i]:
+                if st.button(f"Image {i+1}", key=f"image_{i+1}_button"):
+                    selected_images.append(st.session_state["images"][i])
+    
+    if st.button("Generate Histogram", key="generate_histogram_button"):
+        if not selected_images:
+            st.warning("Please select at least one image to analyze.")
+        else:
+            try:
+                fig, axes = plt.subplots(nrows=len(selected_images), ncols=1, figsize=(10, 5*len(selected_images)))
+                if len(selected_images) == 1:
+                    axes = [axes]
+                
+                for i, img in enumerate(selected_images):
+                    if histogram_type == "Black & White":
+                        img_gray = img.convert('L')
+                        hist = np.histogram(img_gray, bins=256, range=(0, 256))[0]
+                        axes[i].plot(hist, color='gray')
+                        axes[i].set_title(f"Grayscale Histogram - Image {i+1}")
+                    else:
+                        img_rgb = img.convert('RGB')
+                        r, g, b = img_rgb.split()
+                        hist_r = np.histogram(r, bins=256, range=(0, 256))[0]
+                        hist_g = np.histogram(g, bins=256, range=(0, 256))[0]
+                        hist_b = np.histogram(b, bins=256, range=(0, 256))[0]
+                        axes[i].plot(hist_r, color='red', label='Red')
+                        axes[i].plot(hist_g, color='green', label='Green')
+                        axes[i].plot(hist_b, color='blue', label='Blue')
+                        axes[i].set_title(f"Color Histogram - Image {i+1}")
+                        axes[i].legend()
+                
+                plt.tight_layout()
+                st.pyplot(fig)
+            except Exception as e:
+                st.error(f"Error generating histogram: {e}")
+                
         # k-means Clustering
         with st.expander("k-means Clustering"):
             st.write("Select images from the sampling results and number of clusters:")
