@@ -312,12 +312,13 @@ elif st.session_state["active_section"] == "Feature Selection":
             st.write("Select image and histogram type:")
             col1, col2 = st.columns(2)
             with col1:
-                histogram_type = st.selectbox("Histogram Type", ["Black & White", "Colour"])
+                histogram_type = st.selectbox("Histogram Type", ["Black & White", "Colour"], key="histogram_type_select")
             with col2:
                 selected_image_index = st.selectbox("Select Image", 
-                                                  options=list(range(len(st.session_state["images"]))))
+                                                  options=list(range(len(st.session_state["images"]))), 
+                                                  key="image_selector_select")
             
-            if st.button("Generate Histogram"):
+            if st.button("Generate Histogram", key="generate_histogram_button"):
                 img = st.session_state["images"][selected_image_index]
                 if histogram_type == "Black & White":
                     img_gray = img.convert('L')
@@ -347,12 +348,13 @@ elif st.session_state["active_section"] == "Feature Selection":
             st.write("Select images and number of clusters:")
             col1, col2 = st.columns(2)
             with col1:
-                cluster_count = st.number_input("Number of Clusters", min_value=2, max_value=10, value=2)
+                cluster_count = st.number_input("Number of Clusters", min_value=2, max_value=10, value=2, key="cluster_count_input")
             with col2:
                 selected_images_indices = st.multiselect("Select Images", 
-                                                       options=list(range(len(st.session_state["images"]))))
+                                                       options=list(range(len(st.session_state["images"]))), 
+                                                       key="image_selector_multiselect")
             
-            if st.button("Perform k-means Clustering"):
+            if st.button("Perform k-means Clustering", key="perform_kmeans_button"):
                 if not selected_images_indices:
                     st.warning("Please select images to cluster.")
                 else:
@@ -388,12 +390,13 @@ elif st.session_state["active_section"] == "Feature Selection":
             st.write("Select image and feature extraction method:")
             col1, col2 = st.columns(2)
             with col1:
-                shape_method = st.selectbox("Method", ["HOG", "SIFT", "FAST"])
+                shape_method = st.selectbox("Method", ["HOG", "SIFT", "FAST"], key="shape_method_select")
             with col2:
                 selected_image_index = st.selectbox("Select Image", 
-                                                  options=list(range(len(st.session_state["images"]))))
+                                                  options=list(range(len(st.session_state["images"]))), 
+                                                  key="shape_image_selector")
             
-            if st.button("Extract Shape Features"):
+            if st.button("Extract Shape Features", key="extract_shape_features_button"):
                 img = st.session_state["images"][selected_image_index]
                 if shape_method == "HOG":
                     try:
@@ -459,14 +462,15 @@ elif st.session_state["active_section"] == "Feature Selection":
             st.write("Upload labeled training images and test images:")
             col1, col2 = st.columns(2)
             with col1:
-                train_images = st.file_uploader("Training Images", accept_multiple_files=True, type=["png", "jpg", "jpeg"])
-                train_labels_csv = st.file_uploader("Training Labels CSV", type=["csv"])
+                train_images = st.file_uploader("Training Images", accept_multiple_files=True, type=["png", "jpg", "jpeg"], key="train_images_uploader")
+                train_labels_csv = st.file_uploader("Training Labels CSV", type=["csv"], key="train_labels_csv_uploader")
             with col2:
-                test_images = st.file_uploader("Test Images", accept_multiple_files=True, type=["png", "jpg", "jpeg"])
+                test_images = st.file_uploader("Test Images", accept_multiple_files=True, type=["png", "jpg", "jpeg"], key="test_images_uploader")
             
-            if st.button("Extract Haralick Texture Features"):
+            if st.button("Extract Haralick Texture Features", key="extract_haralick_button"):
                 try:
                     from skimage.feature import greycomatrix, greycoprops
+                    import numpy as np
                     
                     # Load training images and labels
                     train_images_list = []
@@ -520,9 +524,10 @@ elif st.session_state["active_section"] == "Feature Selection":
         with st.expander("Extract Texture Features Co-Occurence"):
             st.write("Select image for texture feature extraction:")
             selected_image_index = st.selectbox("Select Image", 
-                                              options=list(range(len(st.session_state["images"]))))
+                                              options=list(range(len(st.session_state["images"]))), 
+                                              key="texture_image_selector")
             
-            if st.button("Extract Co-Occurence Texture Features"):
+            if st.button("Extract Co-Occurence Texture Features", key="extract_texture_button"):
                 img = st.session_state["images"][selected_image_index]
                 try:
                     from skimage.feature import greycomatrix, greycoprops
@@ -557,7 +562,6 @@ elif st.session_state["active_section"] == "Feature Selection":
 
         if st.button("Next: Statistical Analysis", key="feature_next"):
             st.session_state["active_section"] = "Statistics Analysis"
-
 # --- Statistics Analysis ---
 elif st.session_state["active_section"] == "Statistics Analysis":
     st.header("Statistics Analysis")
