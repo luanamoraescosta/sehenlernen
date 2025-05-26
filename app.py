@@ -597,7 +597,6 @@ with st.expander("Histogram Black&White / Colour"):
 
         if st.button("Next: Statistical Analysis", key="feature_next"):
             st.session_state["active_section"] = "Statistics Analysis"
-
             
 # --- Statistics Analysis ---
 elif st.session_state["active_section"] == "Statistics Analysis":
