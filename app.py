@@ -305,7 +305,247 @@ elif st.session_state["active_section"] == "Feature Selection":
     if "images" not in st.session_state:
         st.warning("Please upload images first.")
     else:
-        st.info("Feature selection placeholder")
+        st.info("Feature selection functions")
+        
+        # Histogram Black&White / Colour
+        with st.expander("Histogram Black&White / Colour"):
+            st.write("Select image and histogram type:")
+            col1, col2 = st.columns(2)
+            with col1:
+                histogram_type = st.selectbox("Histogram Type", ["Black & White", "Colour"])
+            with col2:
+                selected_image_index = st.selectbox("Select Image", 
+                                                  options=list(range(len(st.session_state["images"]))))
+            
+            if st.button("Generate Histogram"):
+                img = st.session_state["images"][selected_image_index]
+                if histogram_type == "Black & White":
+                    img_gray = img.convert('L')
+                    hist = np.histogram(img_gray, bins=256, range=(0, 256))[0]
+                else:
+                    img_rgb = img.convert('RGB')
+                    r, g, b = img_rgb.split()
+                    hist_r = np.histogram(r, bins=256, range=(0, 256))[0]
+                    hist_g = np.histogram(g, bins=256, range=(0, 256))[0]
+                    hist_b = np.histogram(b, bins=256, range=(0, 256))[0]
+                    hist = (hist_r, hist_g, hist_b)
+                
+                fig, ax = plt.subplots()
+                if histogram_type == "Black & White":
+                    ax.plot(hist, color='gray')
+                    ax.set_title("Grayscale Histogram")
+                else:
+                    ax.plot(hist_r, color='red', label='Red')
+                    ax.plot(hist_g, color='green', label='Green')
+                    ax.plot(hist_b, color='blue', label='Blue')
+                    ax.set_title("Color Histogram")
+                    ax.legend()
+                st.pyplot(fig)
+        
+        # k-means
+        with st.expander("k-means Clustering"):
+            st.write("Select images and number of clusters:")
+            col1, col2 = st.columns(2)
+            with col1:
+                cluster_count = st.number_input("Number of Clusters", min_value=2, max_value=10, value=2)
+            with col2:
+                selected_images_indices = st.multiselect("Select Images", 
+                                                       options=list(range(len(st.session_state["images"]))))
+            
+            if st.button("Perform k-means Clustering"):
+                if not selected_images_indices:
+                    st.warning("Please select images to cluster.")
+                else:
+                    try:
+                        from sklearn.cluster import KMeans
+                        from sklearn.preprocessing import StandardScaler
+                        
+                        # Extract features (e.g., color histograms)
+                        images = [st.session_state["images"][i] for i in selected_images_indices]
+                        features = []
+                        for img in images:
+                            img_rgb = img.convert('RGB')
+                            r, g, b = img_rgb.split()
+                            hist_r = np.histogram(r, bins=32)[0]
+                            hist_g = np.histogram(g, bins=32)[0]
+                            hist_b = np.histogram(b, bins=32)[0]
+                            features.append(np.concatenate([hist_r, hist_g, hist_b]))
+                        
+                        scaler = StandardScaler()
+                        scaled_features = scaler.fit_transform(features)
+                        
+                        kmeans = KMeans(n_clusters=cluster_count, random_state=42)
+                        cluster_labels = kmeans.fit_predict(scaled_features)
+                        
+                        st.write("Clustering Results:")
+                        for i, label in enumerate(cluster_labels):
+                            st.write(f"Image {selected_images_indices[i]+1} assigned to cluster {label}")
+                    except Exception as e:
+                        st.error(f"Error performing k-means clustering: {e}")
+        
+        # Extract Shape Features
+        with st.expander("Extract Shape Features"):
+            st.write("Select image and feature extraction method:")
+            col1, col2 = st.columns(2)
+            with col1:
+                shape_method = st.selectbox("Method", ["HOG", "SIFT", "FAST"])
+            with col2:
+                selected_image_index = st.selectbox("Select Image", 
+                                                  options=list(range(len(st.session_state["images"]))))
+            
+            if st.button("Extract Shape Features"):
+                img = st.session_state["images"][selected_image_index]
+                if shape_method == "HOG":
+                    try:
+                        from skimage import exposure
+                        from skimage.feature import hog
+                        from skimage.transform import resize
+                        
+                        img_gray = img.convert('L')
+                        img_resized = resize(img_gray, (128, 64))  # HOG requires fixed size
+                        fd, hog_image = hog(img_resized, orientations=9, pixels_per_cell=(8, 8),
+                                         cells_per_block=(2, 2), visualize=True)
+                        
+                        st.write("HOG Features:")
+                        st.write(fd)
+                        fig, ax = plt.subplots()
+                        ax.imshow(hog_image, cmap='gray')
+                        ax.set_title("HOG Visualization")
+                        st.pyplot(fig)
+                    except Exception as e:
+                        st.error(f"Error extracting HOG features: {e}")
+                elif shape_method == "SIFT":
+                    try:
+                        from skimage.feature import sift
+                        from skimage.transform import resize
+                        import cv2
+                        
+                        img_gray = img.convert('L')
+                        img_resized = resize(img_gray, (256, 256))  # SIFT works better with larger images
+                        img_resized = (img_resized * 255).astype('uint8')
+                        
+                        sift = cv2.SIFT_create()
+                        kp, des = sift.detectAndCompute(img_resized, None)
+                        
+                        st.write("SIFT Features:")
+                        st.write(des)
+                        fig, ax = plt.subplots()
+                        ax.imshow(cv2.drawKeypoints(img_resized, kp, None, color=(0, 255, 0)))
+                        ax.set_title("SIFT Keypoints")
+                        st.pyplot(fig)
+                    except Exception as e:
+                        st.error(f"Error extracting SIFT features: {e}")
+                elif shape_method == "FAST":
+                    try:
+                        from skimage.feature import fast
+                        import cv2
+                        
+                        img_gray = img.convert('L')
+                        img_array = np.array(img_gray)
+                        
+                        kp = fast(img_array, threshold=30, nonmax_suppression=True)
+                        
+                        st.write("FAST Features:")
+                        st.write(kp)
+                        fig, ax = plt.subplots()
+                        ax.imshow(cv2.drawKeypoints(img_array, kp, None, color=(0, 255, 0)))
+                        ax.set_title("FAST Keypoints")
+                        st.pyplot(fig)
+                    except Exception as e:
+                        st.error(f"Error extracting FAST features: {e}")
+        
+        # Extract Texture Features Haralick
+        with st.expander("Extract Texture Features Haralick"):
+            st.write("Upload labeled training images and test images:")
+            col1, col2 = st.columns(2)
+            with col1:
+                train_images = st.file_uploader("Training Images", accept_multiple_files=True, type=["png", "jpg", "jpeg"])
+                train_labels_csv = st.file_uploader("Training Labels CSV", type=["csv"])
+            with col2:
+                test_images = st.file_uploader("Test Images", accept_multiple_files=True, type=["png", "jpg", "jpeg"])
+            
+            if st.button("Extract Haralick Texture Features"):
+                try:
+                    from skimage.feature import greycomatrix, greycoprops
+                    
+                    # Load training images and labels
+                    train_images_list = []
+                    for img_file in train_images:
+                        img = Image.open(io.BytesIO(img_file.getbuffer()))
+                        img_gray = img.convert('L')
+                        train_images_list.append(img_gray)
+                    
+                    # Read labels from CSV
+                    df_labels = pd.read_csv(train_labels_csv)
+                    labels = df_labels.iloc[:, 0].tolist()  # Assuming labels are in the first column
+                    
+                    # Extract Haralick features from training images
+                    X_train = []
+                    for img in train_images_list:
+                        gm = greycomatrix(img, distances=[1], angles=[0], levels=256,
+                                       symmetric=True, normed=True)
+                        props = greycoprops(gm, 'contrast')
+                        X_train.append(props[0][0].flatten())
+                    
+                    # Train a classifier
+                    from sklearn.ensemble import RandomForestClassifier
+                    clf = RandomForestClassifier(random_state=42)
+                    clf.fit(X_train, labels)
+                    
+                    # Process test images
+                    test_images_list = []
+                    for img_file in test_images:
+                        img = Image.open(io.BytesIO(img_file.getbuffer()))
+                        img_gray = img.convert('L')
+                        test_images_list.append(img_gray)
+                    
+                    # Extract features from test images
+                    X_test = []
+                    for img in test_images_list:
+                        gm = greycomatrix(img, distances=[1], angles=[0], levels=256,
+                                       symmetric=True, normed=True)
+                        props = greycoprops(gm, 'contrast')
+                        X_test.append(props[0][0].flatten())
+                    
+                    # Predict labels for test images
+                    predicted_labels = clf.predict(X_test)
+                    
+                    st.write("Predicted Labels:")
+                    for i, label in enumerate(predicted_labels):
+                        st.write(f"Test Image {i+1}: {label}")
+                except Exception as e:
+                    st.error(f"Error in Haralick texture feature extraction: {e}")
+        
+        # Extract Texture Features Co-Occurence
+        with st.expander("Extract Texture Features Co-Occurence"):
+            st.write("Select image for texture feature extraction:")
+            selected_image_index = st.selectbox("Select Image", 
+                                              options=list(range(len(st.session_state["images"]))))
+            
+            if st.button("Extract Co-Occurence Texture Features"):
+                img = st.session_state["images"][selected_image_index]
+                try:
+                    from skimage.feature import greycomatrix, greycoprops
+                    import numpy as np
+                    
+                    img_gray = img.convert('L')
+                    gm = greycomatrix(img_gray, distances=[1, 2], angles=[0, np.pi/4, np.pi/2, 3*np.pi/4],
+                                    levels=256, symmetric=True, normed=True)
+                    
+                    # Calculate properties
+                    contrast = greycoprops(gm, 'contrast')
+                    dissimilarity = greycoprops(gm, 'dissimilarity')
+                    homogeneity = greycoprops(gm, 'homogeneity')
+                    energy = greycoprops(gm, 'energy')
+                    correlation = greycoprops(gm, 'correlation')
+                    
+                    features = np.array([contrast.mean(), dissimilarity.mean(), homogeneity.mean(),
+                                      energy.mean(), correlation.mean()])
+                    
+                    st.write("Texture Features:")
+                    st.write(features)
+                except Exception as e:
+                    st.error(f"Error extracting co-occurence texture features: {e}")
         
         col1, col2 = st.columns([2, 1])
         with col1:
