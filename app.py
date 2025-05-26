@@ -193,36 +193,85 @@ elif st.session_state["active_section"] == "Data Input":
         except Exception as e:
             st.error(f"Error loading CSV: {e}")
 
-    sampling_method = st.selectbox("Choose a sampling method", ["Use All Images", "Filter by Metadata", "Stratified Metadata"])
+    # Sampling Methods
+    sampling_method = st.selectbox("Choose a sampling method", 
+                                 ["Use All Images", 
+                                  "Filter by Metadata", 
+                                  "Stratified Sampling by Metadata"])
 
-    if sampling_method == "Stratified Metadata":
-        if uploaded_files:
-            percent_to_sample = st.number_input("Number of images to sample", min_value=1, max_value=100, value=10, step=1)
-            st.session_state["sample_size"] = int(len(uploaded_files) * (percent_to_sample / 100))
-        else:
-            st.warning("Please upload image files first.")
+    if sampling_method == "Use All Images":
+        st.session_state["sample_size"] = len(uploaded_files)
+        st.write(f"All {len(uploaded_files)} images will be used.")
 
     elif sampling_method == "Filter by Metadata":
-        if df is not None:
-            if st.session_state["col_mapping"]:
-                filtered_cols = []
-                for col in st.session_state["col_mapping"]:
-                    if col != "Image ID":
-                        filtered_values = st.multiselect(f"Values for {col}", options=df[col].unique())
-                        filtered_cols.append((col, filtered_values))
+        if df is not None and "col_mapping" in st.session_state:
+            filter_cols = st.multiselect("Select columns to filter", 
+                                       options=[col for col in df.columns if col != image_id_col])
+            
+            filter_values = {}
+            for col in filter_cols:
+                values = st.multiselect(f"Select values for {col}", 
+                                      options=df[col].unique())
+                filter_values[col] = values
 
-                filtered_df = df.copy()
-                for col, values in filtered_cols:
-                    filtered_df = filtered_df[filtered_df[col].isin(values)]
-
-                st.session_state["sample_size"] = len(filtered_df)
-            else:
-                st.warning("Please upload and configure metadata first.")
+            # Apply filters
+            filtered_df = df.copy()
+            for col, values in filter_values.items():
+                filtered_df = filtered_df[filtered_df[col].isin(values)]
+            
+            # Get corresponding images
+            sampled_image_ids = filtered_df[image_id_col].tolist()
+            sampled_files = [file for file in uploaded_files if file.name.split('/')[-1] in sampled_image_ids]
+            
+            st.session_state["sample_size"] = len(sampled_files)
+            st.write(f"After filtering: {len(sampled_files)} images")
+            
         else:
-            st.warning("Please upload a metadata file first.")
-    else:
-        st.session_state["sample_size"] = None
+            st.warning("Please upload and configure metadata first.")
 
+    elif sampling_method == "Stratified Sampling by Metadata":
+        if df is not None and "col_mapping" in st.session_state:
+            st.write("### Stratified Sampling Configuration")
+            
+            # Get categorical columns
+            categorical_cols = [col for col, dtype in st.session_state["col_mapping"].items() 
+                              if dtype == "Categorical" and col != "Image ID"]
+            
+            if not categorical_cols:
+                st.warning("No categorical columns found for stratified sampling.")
+            else:
+                target_col = st.selectbox("Select target column for stratification", 
+                                       options=categorical_cols)
+                
+                sample_size = st.number_input("Desired sample size", 
+                                           min_value=1, 
+                                           max_value=len(uploaded_files), 
+                                           value=len(uploaded_files))
+                
+                # Perform stratified sampling
+                from sklearn.model_selection import StratifiedSampler
+                sampler = StratifiedSampler(n_samples=sample_size, random_state=42)
+                
+                # Prepare data for sampling
+                image_ids = df[image_id_col].tolist()
+                target_vector = df[target_col].tolist()
+                
+                # Get indices of selected images
+                indices = list(range(len(image_ids)))
+                sampled_indices, _ = sampler.sample(indices, target_vector)
+                
+                # Get corresponding files
+                sampled_files = [uploaded_files[i] for i in sampled_indices]
+                st.session_state["sample_size"] = len(sampled_files)
+                st.write(f"Sampled {len(sampled_files)} images")
+                
+        else:
+            st.warning("Please upload and configure metadata first.")
+
+    else:
+        st.warning("Sampling method not implemented yet.")
+
+    # Load images
     if uploaded_files:
         st.session_state["images"] = []
         for img in uploaded_files:
