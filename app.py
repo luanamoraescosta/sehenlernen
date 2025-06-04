@@ -53,16 +53,7 @@ h1, h2, h3, h4 {
 .stButton > button:hover {
     background-color: #5E1F3B;
 }
-.stTabs [role="tab"] {
-    background: #15599E;
-    color: white;
-    padding: 10px;
-    border-radius: 0.2rem 0.2rem 0 0;
-}
-.stTabs [aria-selected="true"] {
-    background: #15A4BD;
-    color: black;
-}
+
 div[data-testid="stSidebar"] {
     background-color: #A98DD8;
 }
@@ -309,8 +300,17 @@ elif st.session_state["active_section"] == "Feature Selection":
     else:
         st.info("Feature selection functions")
         
+        # Create tabs for different feature selection methods
+        tab1, tab2, tab3, tab4, tab5 = st.tabs([
+            "Histogram Analysis", 
+            "k-means Clustering", 
+            "Shape Features", 
+            "Haralick Texture", 
+            "Co-Occurence Texture"
+        ])
+        
         # --- Histogram Black&White / Colour ---
-        with st.expander("Histogram Black&White / Colour"):
+        with tab1:
             st.write("Select image(s) and histogram type:")
             col1, col2 = st.columns(2)
             with col1:
@@ -322,7 +322,7 @@ elif st.session_state["active_section"] == "Feature Selection":
                 selected_images = st.session_state["images"]
             else:
                 st.write("Select image to analyze:")
-                num_columns = 6  # Número de colunas para exibir as miniaturas
+                num_columns = 6  # Number of columns to display thumbnails
                 col_list = st.columns(num_columns)
                 
                 for i in range(min(len(st.session_state["images"]), num_columns)):
@@ -361,9 +361,9 @@ elif st.session_state["active_section"] == "Feature Selection":
                         st.pyplot(fig)
                     except Exception as e:
                         st.error(f"Error generating histogram: {e}")
-                        
-        # k-means Clustering
-        with st.expander("k-means Clustering"):
+        
+        # --- k-means Clustering ---
+        with tab2:
             st.write("Select images from the sampling results and number of clusters:")
             col1, col2 = st.columns(2)
             with col1:
@@ -419,8 +419,8 @@ elif st.session_state["active_section"] == "Feature Selection":
                 except Exception as e:
                     st.error(f"Error performing k-means clustering: {e}")
         
-        # Extract Shape Features
-        with st.expander("Extract Shape Features"):
+        # --- Extract Shape Features ---
+        with tab3:
             st.write("Select image and feature extraction method:")
             col1, col2 = st.columns(2)
             with col1:
@@ -491,8 +491,8 @@ elif st.session_state["active_section"] == "Feature Selection":
                     except Exception as e:
                         st.error(f"Error extracting FAST features: {e}")
         
-        # Extract Texture Features Haralick
-        with st.expander("Extract Texture Features Haralick"):
+        # --- Extract Texture Features Haralick ---
+        with tab4:
             st.write("Upload labeled training images and test images:")
             col1, col2 = st.columns(2)
             with col1:
@@ -553,9 +553,9 @@ elif st.session_state["active_section"] == "Feature Selection":
                         st.write(f"Test Image {i+1}: {label}")
                 except Exception as e:
                     st.error(f"Error in Haralick texture feature extraction: {e}")
-       
-        # Extract Texture Features Co-Occurence
-        with st.expander("Extract Texture Features Co-Occurence"):
+        
+        # --- Extract Texture Features Co-Occurence ---
+        with tab5:
             st.write("Select image for texture feature extraction:")
             selected_image_index = st.selectbox("Select Image", 
                                               options=list(range(len(st.session_state["images"]))), 
@@ -586,7 +586,7 @@ elif st.session_state["active_section"] == "Feature Selection":
                 except Exception as e:
                     st.error(f"Error extracting co-occurence texture features: {e}")
         
-        
+        # Navigation buttons at the bottom
         col1, col2 = st.columns([2, 1])
         with col1:
             if st.button("Download Result", key="feature_download_result"):
