@@ -3,6 +3,7 @@ import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
 import io
+import base64
 from PIL import Image
 from sklearn.model_selection import train_test_split
 from sklearn.model_selection import StratifiedKFold
@@ -22,7 +23,12 @@ default_keys = {
     "sample_size": None,
     "processing_steps": [],
     "col_mapping": {},
-    "selected_images": [],  # Added to track selected images for histogram
+    "selected_images": [],
+    "histogram_images": [],  # Store histogram images
+    "show_fullscreen": False,  # Control fullscreen display
+    "fullscreen_image": None,  # Image to show in fullscreen
+    "fullscreen_caption": "",  # Caption for fullscreen image
+    "fullscreen_download_name": "image.png",  # Download filename
 }
 for key, value in default_keys.items():
     if key not in st.session_state:
@@ -71,8 +77,182 @@ button[kind="secondary"][data-testid="baseButton-secondary"] {
 button[kind="secondary"][data-testid="baseButton-secondary"]:hover {
     background-color: #0D47A1 !important;
 }
+
+/* Fullscreen overlay */
+.fullscreen-overlay {
+    position: fixed;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
+    background-color: rgba(0,0,0,0.9);
+    z-index: 9999;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+}
+.fullscreen-content {
+    max-width: 90%;
+    max-height: 85%;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+}
+.fullscreen-image {
+    max-width: 100%;
+    max-height: 80vh;
+    object-fit: contain;
+}
+.fullscreen-controls {
+    margin-top: 1rem;
+    display: flex;
+    gap: 1rem;
+}
+.image-container {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    margin-bottom: 1rem;
+}
+.thumbnail {
+    max-width: 200px;
+    max-height: 200px;
+    object-fit: contain;
+}
 </style>
 """, unsafe_allow_html=True)
+
+# --- Helper Functions ---
+
+def pil_to_base64(img):
+    buf = io.BytesIO()
+    img.save(buf, format="PNG")
+    return base64.b64encode(buf.getvalue()).decode()
+@st.cache_data
+def read_csv(file, delimiter, decimal_sep):
+    if file.name.endswith(".csv"):
+        return pd.read_csv(file, delimiter=delimiter, decimal=decimal_sep)
+    else:
+        return pd.read_excel(file)
+
+def create_histogram_figure(image, hist_type, idx):
+    """Create matplotlib figure for histogram without displaying it"""
+    fig, ax = plt.subplots()
+    
+    if hist_type == "Black and White":
+        if hasattr(image, "convert"):
+            img_gray = image.convert("L")
+        else:
+            img_gray = Image.fromarray(image)
+        img_array = np.array(img_gray)
+        ax.hist(img_array.ravel(), bins=256, color='gray', alpha=0.7)
+        ax.set_title(f"Histogram (B&W) for Image {idx+1}")
+        ax.set_xlabel("Pixel Intensity")
+        ax.set_ylabel("Frequency")
+    else:  # Colored
+        img_array = np.array(image)
+        if len(img_array.shape) == 3 and img_array.shape[2] >= 3:
+            colors = ('r', 'g', 'b')
+            for i, color in enumerate(colors):
+                ax.hist(img_array[..., i].ravel(), bins=256, color=color, alpha=0.5, label=f'{color.upper()} channel')
+            ax.legend()
+        else:
+            ax.hist(img_array.ravel(), bins=256, color='gray', alpha=0.7)
+        ax.set_title(f"Histogram (Colored) for Image {idx+1}")
+        ax.set_xlabel("Pixel Intensity")
+        ax.set_ylabel("Frequency")
+    
+    return fig
+
+def display_image_with_option(image, caption, key_suffix, download_name="image.png"):
+    """Display image with 'View Full Screen' button"""
+    container = st.container()
+    with container:
+        # Display the image
+        if isinstance(image, Image.Image):
+            st.image(image, caption=caption, width=200)
+        elif isinstance(image, bytes):
+            st.image(image, caption=caption, use_column_width=True, output_format="PNG", width=200)
+        else:
+            st.image(image, caption=caption, width=200)
+        
+        # Button to view full screen
+        if st.button("View Full Screen", key=f"view_{key_suffix}"):
+            st.session_state.show_fullscreen = True
+            st.session_state.fullscreen_caption = caption
+            st.session_state.fullscreen_download_name = download_name
+            
+            # Convert to bytes if it's a PIL image
+            if isinstance(image, Image.Image):
+                buf = io.BytesIO()
+                image.save(buf, format='PNG')
+                st.session_state.fullscreen_image = buf.getvalue()
+            else:
+                st.session_state.fullscreen_image = image
+
+def render_fullscreen():
+    """Render fullscreen image overlay if needed"""
+    if st.session_state.show_fullscreen and st.session_state.fullscreen_image:
+        img_data = st.session_state.fullscreen_image
+        caption = st.session_state.fullscreen_caption
+        download_name = st.session_state.fullscreen_download_name
+
+        # If img_data is a base64 string, decode it to bytes
+        if isinstance(img_data, str):
+            img_bytes = base64.b64decode(img_data)
+        else:
+            img_bytes = img_data
+
+        img_b64 = base64.b64encode(img_bytes).decode()
+
+        # Create fullscreen overlay (image only)
+        st.markdown(
+            f"""
+            <div class="fullscreen-overlay">
+                <div class="fullscreen-content">
+                    <img src="data:image/png;base64,{img_b64}" class="fullscreen-image">
+                </div>
+            </div>
+            """, 
+            unsafe_allow_html=True
+        )
+
+        # --- Custom CSS for close button to match download button ---
+        st.markdown("""
+        <style>
+        .stCloseButton > button {
+            background-color: #1565C0 !important;
+            color: white !important;
+            border-radius: 0.2rem !important;
+            margin-top: 0.5rem;
+            margin-bottom: 0.5rem;
+            margin-left: 0.5rem;
+            transition: background-color 0.3s ease;
+        }
+        .stCloseButton > button:hover {
+            background-color: #0D47A1 !important;
+        }
+        </style>
+        """, unsafe_allow_html=True)
+
+        # --- Place Download and Close buttons side by side ---
+        col1, col2 = st.columns([1, 1])
+        with col1:
+            st.download_button(
+                label="Download",
+                data=img_bytes,
+                file_name=download_name,
+                mime="image/png",
+                key="download_histogram"
+            )
+        with col2:
+            # Add a unique class to style the close button
+            close_btn = st.button("Close Fullscreen", key="close_fullscreen")
+            if close_btn:
+                st.session_state.show_fullscreen = False
+                st.experimental_rerun()
+            st.markdown('<style>div[data-testid="column"]:nth-of-type(2) button {margin-top: 0.5rem;}</style>', unsafe_allow_html=True)
 
 # --- Sidebar Navigation ---
 with st.sidebar:
@@ -94,23 +274,6 @@ st.title("Sehen Lernen")
 # --- Default Section ---
 if "active_section" not in st.session_state:
     st.session_state["active_section"] = "Home"
-
-# --- Helper Functions ---
-@st.cache_data
-def read_csv(file, delimiter, decimal_sep):
-    if file.name.endswith(".csv"):
-        return pd.read_csv(file, delimiter=delimiter, decimal=decimal_sep)
-    else:
-        return pd.read_excel(file)
-
-# --- Function to show large image ---
-def show_large_image(index):
-    st.session_state["selected_image"] = index
-    st.session_state["show_large_image"] = True
-    with st.sidebar:
-        st.subheader("Selected Image")
-        image = st.session_state["images"][index]
-        st.image(image, caption=f"Image {index+1}")
 
 # --- Home Page ---
 if st.session_state["active_section"] == "Home":
@@ -282,10 +445,7 @@ elif st.session_state["active_section"] == "Data Input":
                 width = 200
                 height = (img.height * width) / img.width
                 thumb = img.resize((width, int(height)))
-                # Use a button to show the image preview
-                if st.button(f"Image {i+1}", key=f"img_{i+1}_button"):
-                    show_large_image(i)
-                st.image(thumb, caption=f"Image {i+1}")
+                display_image_with_option(thumb, f"Image {i+1}", f"data_input_{i}", f"image_{i+1}.png")
 
     st.session_state["sampling_method"] = sampling_method
 
@@ -333,46 +493,41 @@ elif st.session_state["active_section"] == "Feature Selection":
 
                 # Only define and use img here, where images exist
                 img = st.session_state["images"][selected_index]
-                st.image(img, caption=f"Preview: Image {selected_index+1}", width=200)
+                display_image_with_option(img, f"Preview: Image {selected_index+1}", 
+                                        f"preview_{selected_index}", f"preview_{selected_index+1}.png")
 
                 if st.button("Generate Histogram", key="generate_histogram_button"):
-                    import numpy as np
-                    import matplotlib.pyplot as plt
-
-                    def plot_histogram(image, hist_type, idx):
-                        from PIL import Image
-                        if hist_type == "Black and White":
-                            if hasattr(image, "convert"):
-                                img_gray = image.convert("L")
-                            else:
-                                img_gray = Image.fromarray(image)
-                            img_array = np.array(img_gray)
-                            fig, ax = plt.subplots()
-                            ax.hist(img_array.ravel(), bins=256, color='gray', alpha=0.7)
-                            ax.set_title(f"Histogram (B&W) for Image {idx+1}")
-                            ax.set_xlabel("Pixel Intensity")
-                            ax.set_ylabel("Frequency")
-                            st.pyplot(fig)
-                        else:  # Colored
-                            img_array = np.array(image)
-                            fig, ax = plt.subplots()
-                            if len(img_array.shape) == 3 and img_array.shape[2] >= 3:
-                                colors = ('r', 'g', 'b')
-                                for i, color in enumerate(colors):
-                                    ax.hist(img_array[..., i].ravel(), bins=256, color=color, alpha=0.5, label=f'{color.upper()} channel')
-                                ax.legend()
-                            else:
-                                ax.hist(img_array.ravel(), bins=256, color='gray', alpha=0.7)
-                            ax.set_title(f"Histogram (Colored) for Image {idx+1}")
-                            ax.set_xlabel("Pixel Intensity")
-                            ax.set_ylabel("Frequency")
-                            st.pyplot(fig)
-
+                    # Clear previous histograms
+                    st.session_state.histogram_images = []
+                    
                     if all_images:
-                        for idx, image in enumerate(st.session_state["images"]):
-                            plot_histogram(image, hist_type, idx)
+                        images_to_process = st.session_state["images"]
                     else:
-                        plot_histogram(img, hist_type, selected_index)
+                        images_to_process = [img]
+                    
+                    for i, image in enumerate(images_to_process):
+                        fig = create_histogram_figure(image, hist_type, i)
+                        buf = io.BytesIO()
+                        fig.savefig(buf, format='png')
+                        buf.seek(0)
+                        st.session_state.histogram_images.append(buf.getvalue())
+                        plt.close(fig)  # Close figure to free memory
+                    
+                    st.success(f"Generated {len(st.session_state.histogram_images)} histograms!")
+                
+                # Display histograms as thumbnails if they exist
+                if st.session_state.get("histogram_images"):
+                    st.subheader("Generated Histograms")
+                    cols = st.columns(4)
+                    for i, hist_img in enumerate(st.session_state.histogram_images):
+                        with cols[i % 4]:
+                            pil_img = Image.open(io.BytesIO(hist_img))
+                            st.image(pil_img, caption=f"Histogram {i+1}", width=200)
+                            if st.button(f"Enlarge Histogram {i+1}", key=f"enlarge_hist_{i}"):
+                                st.session_state.show_fullscreen = True
+                                st.session_state.fullscreen_image = hist_img
+                                st.session_state.fullscreen_caption = f"Histogram {i+1}"
+                                st.session_state.fullscreen_download_name = f"histogram_{i+1}.png"
 
         # --- k-means Clustering ---
         with tab2:
@@ -422,7 +577,16 @@ elif st.session_state["active_section"] == "Feature Selection":
                     ax.set_ylabel('Principal Component 2')
                     ax.set_title('k-means Clustering')
                     ax.legend()
-                    st.pyplot(fig)
+                    
+                    # Save plot to buffer
+                    buf = io.BytesIO()
+                    fig.savefig(buf, format='png')
+                    buf.seek(0)
+                    plt.close(fig)
+                    
+                    # Display with fullscreen option
+                    display_image_with_option(buf.getvalue(), "k-means Clustering", 
+                                            "kmeans_plot", "kmeans_clustering.png")
                     
                     # Display cluster assignments
                     st.write("Cluster Assignments:")
@@ -460,7 +624,17 @@ elif st.session_state["active_section"] == "Feature Selection":
                         fig, ax = plt.subplots()
                         ax.imshow(hog_image, cmap='gray')
                         ax.set_title("HOG Visualization")
-                        st.pyplot(fig)
+                        
+                        # Save plot to buffer
+                        buf = io.BytesIO()
+                        fig.savefig(buf, format='png')
+                        buf.seek(0)
+                        plt.close(fig)
+                        
+                        # Display with fullscreen option
+                        display_image_with_option(buf.getvalue(), "HOG Visualization", 
+                                                "hog_image", "hog_visualization.png")
+                        
                     except Exception as e:
                         st.error(f"Error extracting HOG features: {e}")
                 elif shape_method == "SIFT":
@@ -478,10 +652,17 @@ elif st.session_state["active_section"] == "Feature Selection":
                         
                         st.write("SIFT Features:")
                         st.write(des)
-                        fig, ax = plt.subplots()
-                        ax.imshow(cv2.drawKeypoints(img_resized, kp, None, color=(0, 255, 0)))
-                        ax.set_title("SIFT Keypoints")
-                        st.pyplot(fig)
+                        
+                        # Draw keypoints
+                        img_with_keypoints = cv2.drawKeypoints(img_resized, kp, None, color=(0, 255, 0))
+                        
+                        # Convert to PIL image
+                        img_pil = Image.fromarray(img_with_keypoints)
+                        
+                        # Display with fullscreen option
+                        display_image_with_option(img_pil, "SIFT Keypoints", 
+                                                "sift_image", "sift_keypoints.png")
+                        
                     except Exception as e:
                         st.error(f"Error extracting SIFT features: {e}")
                 elif shape_method == "FAST":
@@ -496,10 +677,17 @@ elif st.session_state["active_section"] == "Feature Selection":
                         
                         st.write("FAST Features:")
                         st.write(kp)
-                        fig, ax = plt.subplots()
-                        ax.imshow(cv2.drawKeypoints(img_array, kp, None, color=(0, 255, 0)))
-                        ax.set_title("FAST Keypoints")
-                        st.pyplot(fig)
+                        
+                        # Draw keypoints
+                        img_with_keypoints = cv2.drawKeypoints(img_array, kp, None, color=(0, 255, 0))
+                        
+                        # Convert to PIL image
+                        img_pil = Image.fromarray(img_with_keypoints)
+                        
+                        # Display with fullscreen option
+                        display_image_with_option(img_pil, "FAST Keypoints", 
+                                                "fast_image", "fast_keypoints.png")
+                        
                     except Exception as e:
                         st.error(f"Error extracting FAST features: {e}")
         
@@ -647,3 +835,8 @@ elif st.session_state["active_section"] == "Visualization":
 
     if st.button("Previous: Statistical Analysis", key="viz_previous"):
         st.session_state["active_section"] = "Statistics Analysis"
+
+# --- Render fullscreen overlay if needed ---
+render_fullscreen()
+
+
