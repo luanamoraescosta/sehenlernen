@@ -1,6 +1,8 @@
 # backend/app/routers/features.py
 
-from fastapi import APIRouter, UploadFile, File, HTTPException
+import logging
+from fastapi import APIRouter, HTTPException, UploadFile, File
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 from typing import List, Dict, Any
 
@@ -15,6 +17,7 @@ from app.services.feature_service import (
 router = APIRouter()
 
 # ---- Request Models ----
+
 class HistogramRequest(BaseModel):
     hist_type: str
     image_index: int
@@ -31,9 +34,9 @@ class ShapeRequest(BaseModel):
 # ---- Endpoints ----
 
 @router.post("/histogram")
-def histogram(request: HistogramRequest):
+async def histogram(request: HistogramRequest):
     """
-    Generate one or more histograms.
+    Generate one or more histograms for the uploaded images.
     """
     try:
         b64_list = generate_histogram_service(
@@ -42,13 +45,18 @@ def histogram(request: HistogramRequest):
             all_images=request.all_images
         )
         return {"histograms": b64_list}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    except Exception:
+        logging.exception("Failed to generate histogram")
+        # Return a controlled JSON error response
+        return JSONResponse(
+            status_code=500,
+            content={"detail": "Internal server error generating histogram"}
+        )
 
 @router.post("/kmeans")
 def kmeans(request: KMeansRequest):
     """
-    Perform k-means clustering and return plot + assignments.
+    Perform k-means clustering on all uploaded images.
     """
     try:
         plot_b64, assignments = perform_kmeans_service(
@@ -56,13 +64,14 @@ def kmeans(request: KMeansRequest):
             random_state=request.random_state
         )
         return {"plot": plot_b64, "assignments": assignments}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    except Exception:
+        logging.exception("Failed to perform k-means clustering")
+        raise HTTPException(status_code=500, detail="Internal server error in k-means")
 
 @router.post("/shape")
 def shape_features(request: ShapeRequest):
     """
-    Extract shape features (HOG, SIFT, FAST) for a given image index.
+    Extract shape features (HOG, SIFT, FAST) from a single image.
     """
     try:
         features, viz_b64 = extract_shape_service(
@@ -73,8 +82,9 @@ def shape_features(request: ShapeRequest):
         if viz_b64:
             response["visualization"] = viz_b64
         return response
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    except Exception:
+        logging.exception("Failed to extract shape features")
+        raise HTTPException(status_code=500, detail="Internal server error extracting shape features")
 
 @router.post("/haralick")
 async def haralick(
@@ -83,7 +93,7 @@ async def haralick(
     test_images: List[UploadFile] = File(...)
 ):
     """
-    Extract Haralick texture features, train random forest, predict test labels.
+    Extract Haralick texture features, train classifier, and predict test labels.
     """
     try:
         labels, predictions = await extract_haralick_service(
@@ -92,18 +102,18 @@ async def haralick(
             test_images=test_images
         )
         return {"labels": labels, "predictions": predictions}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    except Exception:
+        logging.exception("Failed to extract Haralick texture features")
+        raise HTTPException(status_code=500, detail="Internal server error extracting Haralick features")
 
 @router.post("/cooccurrence")
 def cooccurrence(request: ShapeRequest):
     """
-    Extract co-occurrence texture features for a given image index.
+    Extract gray-level co-occurrence features from a single image.
     """
     try:
-        features = extract_cooccurrence_service(
-            image_index=request.image_index
-        )
+        features = extract_cooccurrence_service(image_index=request.image_index)
         return {"features": features}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    except Exception:
+        logging.exception("Failed to extract co-occurrence features")
+        raise HTTPException(status_code=500, detail="Internal server error extracting co-occurrence features")
