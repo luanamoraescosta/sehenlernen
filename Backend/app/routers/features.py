@@ -1,6 +1,8 @@
+# backend/app/routers/features.py
+
 from fastapi import APIRouter, UploadFile, File, HTTPException
 from pydantic import BaseModel
-from typing import List, Optional, Dict, Any
+from typing import List, Dict, Any
 
 from app.services.feature_service import (
     generate_histogram_service,
@@ -12,7 +14,7 @@ from app.services.feature_service import (
 
 router = APIRouter()
 
-# Request models
+# ---- Request Models ----
 class HistogramRequest(BaseModel):
     hist_type: str
     image_index: int
@@ -26,8 +28,13 @@ class ShapeRequest(BaseModel):
     method: str
     image_index: int
 
-# Histogram endpoint\@router.post("/histogram")
+# ---- Endpoints ----
+
+@router.post("/histogram")
 def histogram(request: HistogramRequest):
+    """
+    Generate one or more histograms.
+    """
     try:
         b64_list = generate_histogram_service(
             hist_type=request.hist_type,
@@ -38,8 +45,11 @@ def histogram(request: HistogramRequest):
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-# K-means endpoint\@router.post("/kmeans")
+@router.post("/kmeans")
 def kmeans(request: KMeansRequest):
+    """
+    Perform k-means clustering and return plot + assignments.
+    """
     try:
         plot_b64, assignments = perform_kmeans_service(
             n_clusters=request.n_clusters,
@@ -49,8 +59,11 @@ def kmeans(request: KMeansRequest):
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-# Shape features endpoint\@router.post("/shape")
+@router.post("/shape")
 def shape_features(request: ShapeRequest):
+    """
+    Extract shape features (HOG, SIFT, FAST) for a given image index.
+    """
     try:
         features, viz_b64 = extract_shape_service(
             method=request.method,
@@ -63,12 +76,15 @@ def shape_features(request: ShapeRequest):
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-# Haralick texture endpoint\@router.post("/haralick")
+@router.post("/haralick")
 async def haralick(
     train_images: List[UploadFile] = File(...),
     train_labels: UploadFile = File(...),
     test_images: List[UploadFile] = File(...)
 ):
+    """
+    Extract Haralick texture features, train random forest, predict test labels.
+    """
     try:
         labels, predictions = await extract_haralick_service(
             train_images=train_images,
@@ -79,8 +95,11 @@ async def haralick(
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-# Co-occurrence texture endpoint\@router.post("/cooccurrence")
-def cooccurrence(request: ShapeRequest):  # reuse index model
+@router.post("/cooccurrence")
+def cooccurrence(request: ShapeRequest):
+    """
+    Extract co-occurrence texture features for a given image index.
+    """
     try:
         features = extract_cooccurrence_service(
             image_index=request.image_index

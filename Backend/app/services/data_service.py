@@ -1,3 +1,5 @@
+# backend/app/services/data_service.py
+
 import os
 from pathlib import Path
 import shutil
@@ -36,7 +38,6 @@ async def read_metadata(file: UploadFile, delimiter: str, decimal_sep: str) -> l
     """
     global metadata_df
     contents = await file.read()
-    # Determine file type by extension
     name = file.filename.lower()
     if name.endswith(".csv"):
         metadata_df = pd.read_csv(
@@ -58,16 +59,16 @@ async def configure_metadata(id_col: str, mapping: dict) -> None:
     image_id_col = id_col
     col_mapping = mapping
 
-async def load_image(image_id: str):
+def load_image(image_id: str) -> bytes:
     """
-    Load a stored image by its ID (filename) and return bytes.
+    Load a stored image by its ID (filename) and return raw bytes.
     """
     file_path = IMAGE_DIR / image_id
     if not file_path.exists():
         raise FileNotFoundError(f"Image {image_id} not found")
     return file_path.read_bytes()
 
-async def get_all_image_ids() -> list[str]:
+def get_all_image_ids() -> list[str]:
     """
     Return list of all saved image IDs (filenames).
     """

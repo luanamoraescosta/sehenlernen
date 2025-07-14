@@ -22,25 +22,39 @@ def render_data_input():
         type=["png", "jpg", "jpeg"],
         key="upload_images"
     )
+    # Send to backend once
+    if uploaded_images and "uploaded_image_ids" not in st.session_state:
+        st.session_state["uploaded_image_ids"] = upload_images(uploaded_images)
+
+    # Store PIL images locally so next screen can access them
+    if uploaded_images:
+        st.session_state["images"] = [
+            Image.open(io.BytesIO(f.getbuffer())) for f in uploaded_images
+        ]
+
+    # --- Metadata Configuration ---
     uploaded_csv = st.file_uploader(
         "Upload Metadata File (optional)",
         type=["csv", "xlsx"],
         key="upload_metadata"
     )
-
-    # --- Metadata Configuration ---
     if uploaded_csv:
         st.markdown("### Metadata Configuration")
         delimiter = st.selectbox("Select delimiter", [",", ";", "\t"], key="delimiter")
         decimal_sep = st.selectbox("Select decimal separator", [".", ","], key="decimal_sep")
 
         if st.button("Load Metadata", key="load_metadata"):
-            cols = upload_metadata_file(uploaded_csv, delimiter, decimal_sep)
-            st.session_state["metadata_columns"] = cols
+            st.session_state["metadata_columns"] = upload_metadata_file(
+                uploaded_csv, delimiter, decimal_sep
+            )
 
         if "metadata_columns" in st.session_state:
             cols = st.session_state["metadata_columns"]
-            image_id_col = st.selectbox("Select column for Image ID", options=cols, key="image_id_col")
+            image_id_col = st.selectbox(
+                "Select column for Image ID",
+                options=cols,
+                key="image_id_col"
+            )
 
             col_mapping = {}
             for col in cols:
@@ -64,10 +78,9 @@ def render_data_input():
         key="sampling_method"
     )
 
-    if sampling_method == "Use All Images":
-        if uploaded_images:
-            st.session_state["sample_size"] = len(uploaded_images)
-            st.write(f"All {len(uploaded_images)} images will be used.")
+    if sampling_method == "Use All Images" and uploaded_images:
+        st.session_state["sample_size"] = len(uploaded_images)
+        st.write(f"All {len(uploaded_images)} images will be used.")
 
     elif sampling_method == "Filter by Metadata":
         if st.session_state.get("metadata_configured"):
@@ -78,7 +91,6 @@ def render_data_input():
             )
             filter_values = {}
             for col in filter_cols:
-                # Assume api_client.make_available_unique_values fetched and stored them
                 options = st.session_state.get("metadata_unique_values", {}).get(col, [])
                 values = st.multiselect(
                     f"Select values for {col}",
@@ -96,7 +108,6 @@ def render_data_input():
 
     elif sampling_method == "Stratified Sampling by Metadata":
         if st.session_state.get("metadata_configured"):
-            # Get categorical columns from mapping
             categorical_cols = [
                 col for col, dt in st.session_state.get("col_mapping", {}).items()
                 if dt == "Categorical"
@@ -124,17 +135,12 @@ def render_data_input():
             st.warning("Please configure metadata first.")
 
     # --- Preview Uploaded Images ---
-    if uploaded_images:
-        st.session_state["images"] = [
-            Image.open(io.BytesIO(f.getbuffer())) for f in uploaded_images
-        ]
+    if "images" in st.session_state:
         st.subheader("Preview of Uploaded Images")
         cols = st.columns(6)
         for i, img in enumerate(st.session_state["images"]):
             with cols[i % 6]:
                 st.image(img, caption=f"Image {i+1}", width=200)
-
-    st.session_state["sampling_method"] = sampling_method
 
     # --- Navigation ---
     if st.button("Next: Feature Selection", key="next_to_feature"):

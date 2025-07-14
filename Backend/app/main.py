@@ -18,9 +18,10 @@ app = FastAPI(
 )
 
 # --- CORS Middleware ---
+# Only allow the Streamlit frontend (localhost:8501) to make requests with credentials
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # tighten in prod
+    allow_origins=["http://localhost:8501"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
