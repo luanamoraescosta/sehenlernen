@@ -26,6 +26,8 @@ class HistogramRequest(BaseModel):
 class KMeansRequest(BaseModel):
     n_clusters: int
     random_state: int
+    selected_images: List[int] = [] 
+    use_all_images: bool = False
 
 class ShapeRequest(BaseModel):
     method: str
@@ -56,17 +58,19 @@ async def histogram(request: HistogramRequest):
 @router.post("/kmeans")
 def kmeans(request: KMeansRequest):
     """
-    Perform k-means clustering on all uploaded images.
+    Do the clustering K-means on selected images.
     """
     try:
         plot_b64, assignments = perform_kmeans_service(
             n_clusters=request.n_clusters,
-            random_state=request.random_state
+            random_state=request.random_state,
+            selected_images=request.selected_images,
+            use_all_images=request.use_all_images
         )
         return {"plot": plot_b64, "assignments": assignments}
-    except Exception:
-        logging.exception("Failed to perform k-means clustering")
-        raise HTTPException(status_code=500, detail="Internal server error in k-means")
+    except Exception as e:
+        logging.exception("Failed to do the clustering K-means")
+        raise HTTPException(status_code=500, detail=str(e))
 
 @router.post("/shape")
 def shape_features(request: ShapeRequest):
