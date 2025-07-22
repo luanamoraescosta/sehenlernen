@@ -59,14 +59,30 @@ def generate_histogram_service(hist_type: str, image_index: int, all_images: boo
     return b64_list
 
 
-def perform_kmeans_service(n_clusters: int, random_state: int) -> tuple[str,list[int]]:
+def perform_kmeans_service(n_clusters: int, random_state: int, selected_images: list[int], use_all_images: bool) -> tuple[str, list[int]]:
     """
-    Perform k-means clustering and return plot and assignments.
+    Performs K-means clustering on the selected images and returns the plot and label assignments.
     """
-    # Load all images
     img_ids = get_all_image_ids()
+    
+    if not img_ids:
+        raise Exception("No images available for clustering")
+    
+    # Determine which images to use
+    if use_all_images or not selected_images:
+        selected_ids = img_ids
+        selected_indices = list(range(len(img_ids)))
+    else:
+        # Filter valid indices
+        selected_indices = [i for i in selected_images if i < len(img_ids)]
+        selected_ids = [img_ids[i] for i in selected_indices]
+    
+    if not selected_ids:
+        raise Exception("No valid images selected for clustering")
+    
+    # Extract features from selected images
     features = []
-    for img_id in img_ids:
+    for img_id in selected_ids:
         img_bytes = load_image(img_id)
         img = Image.open(io.BytesIO(img_bytes)).convert('RGB')
         r, g, b = img.split()
@@ -74,17 +90,20 @@ def perform_kmeans_service(n_clusters: int, random_state: int) -> tuple[str,list
         hist_g = np.histogram(np.array(g), bins=32)[0]
         hist_b = np.histogram(np.array(b), bins=32)[0]
         features.append(np.concatenate([hist_r, hist_g, hist_b]))
+    
+    # K-means processing
     X = np.vstack(features)
     scaled = StandardScaler().fit_transform(X)
     pca = PCA(n_components=2)
     reduced = pca.fit_transform(scaled)
     kmeans = KMeans(n_clusters=n_clusters, random_state=random_state)
     labels = kmeans.fit_predict(reduced)
-    # Plot
+    
+    # Generate plot
     fig, ax = plt.subplots()
     for i in range(n_clusters):
-        ax.scatter(reduced[labels==i,0], reduced[labels==i,1], label=f"Cluster {i}", alpha=0.7)
-    ax.scatter(kmeans.cluster_centers_[:,0], kmeans.cluster_centers_[:,1], marker='*', s=200, c='red')
+        ax.scatter(reduced[labels == i, 0], reduced[labels == i, 1], label=f"Cluster {i}", alpha=0.7)
+    ax.scatter(kmeans.cluster_centers_[:, 0], kmeans.cluster_centers_[:, 1], marker='*', s=200, c='red')
     ax.set_xlabel("PC1")
     ax.set_ylabel("PC2")
     ax.legend()
@@ -92,6 +111,7 @@ def perform_kmeans_service(n_clusters: int, random_state: int) -> tuple[str,list
     fig.savefig(buf, format="png")
     plt.close(fig)
     plot_b64 = base64.b64encode(buf.getvalue()).decode()
+    
     return plot_b64, labels.tolist()
 
 
