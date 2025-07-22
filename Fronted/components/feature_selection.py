@@ -78,16 +78,61 @@ def render_feature_selection():
             "Number of Clusters", min_value=2, max_value=10, value=2, key="kmeans_k"
         )
         random_state = st.number_input(
-            "Random State", min_value=0, max_value=100, value=42, key="kmeans_rs"
+            "Random Seed", min_value=0, max_value=100, value=42, key="kmeans_rs"
         )
-
-        if st.button("Perform k-means", key="btn_kmeans"):
-            params = {"n_clusters": cluster_count, "random_state": random_state}
-            plot_bytes, assignments = perform_kmeans(params)
-            st.image(plot_bytes, caption="k-means Clustering", width=400)
-            st.write("Cluster Assignments:")
-            for idx, label in enumerate(assignments):
-                st.write(f"Image {idx+1} → Cluster {label}")
+        
+        # Image selection section
+        st.markdown("### Image Selection")
+        all_images_checkbox = st.checkbox("Select all images", key="kmeans_all_images")
+        
+        # Ensure selected_indices is always a list
+        if all_images_checkbox:
+            selected_indices = list(range(len(images)))
+            st.info(f"All {len(images)} images selected")
+        else:
+            selected_indices = st.multiselect(
+                "Select images for clustering",
+                options=list(range(len(images))),
+                format_func=lambda x: f"Image {x+1}",
+                key="kmeans_image_indices"
+            )
+        
+        # Explicit validation before creating params
+        if st.button("Perform K-means", key="btn_kmeans"):
+            # Check minimum requirements
+            if not images:
+                st.error("No images have been uploaded. Please upload images first.")
+            elif not selected_indices and not all_images_checkbox:
+                st.error("Select at least one image or check 'Select all images'.")
+            else:
+                try:
+                    # Safe params initialization
+                    params = {
+                        "n_clusters": cluster_count,
+                        "random_state": random_state,
+                        "selected_images": selected_indices if not all_images_checkbox else [],
+                        "use_all_images": all_images_checkbox
+                    }
+                    
+                    plot_bytes, assignments = perform_kmeans(params)
+                    st.image(plot_bytes, caption="K-means Clustering", width=400)
+                    st.write("Cluster Assignments:")
+                    
+                    # Show results with image names if metadata is available
+                    if "metadata_df" in st.session_state and "image_id_col" in st.session_state:
+                        metadata = st.session_state["metadata_df"]
+                        id_col = st.session_state["image_id_col"]
+                        image_ids = metadata[id_col].tolist()
+                        
+                        for idx, label in enumerate(assignments):
+                            image_name = image_ids[idx] if idx < len(image_ids) else f"Image {idx+1}"
+                            st.write(f"{image_name} → Cluster {label}")
+                    else:
+                        for idx, label in enumerate(assignments):
+                            st.write(f"Image {idx+1} → Cluster {label}")
+                            
+                except Exception as e:
+                    st.error(f"Error performing K-means clustering: {str(e)}")
 
     # --- Shape Features ---
     with tab3:
