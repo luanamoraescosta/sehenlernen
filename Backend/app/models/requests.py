@@ -18,6 +18,8 @@ class ConfigureMetadataRequest(BaseModel):
 class KMeansRequest(BaseModel):
     n_clusters: int
     random_state: int
+    selected_images: List[int] = []  
+    use_all_images: bool = False
 
 class ShapeRequest(BaseModel):
     method: str
