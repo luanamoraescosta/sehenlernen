@@ -83,17 +83,26 @@ def generate_histogram(params):
 
 def perform_kmeans(params):
     """
-    Request k-means clustering.
-    :param params: dict with keys 'n_clusters', 'random_state'
+    Requests K-means clustering.
+    :param params: dict with keys 'n_clusters', 'random_state', 'selected_images', 'use_all_images'
     :return: (plot_bytes, assignments)
     """
     url = f"{_get_base_url()}/features/kmeans"
     resp = requests.post(url, json=params)
-    resp.raise_for_status()
-    data = resp.json()
-    plot_bytes = base64.b64decode(data.get("plot", ""))
-    assignments = data.get("assignments", [])
-    return plot_bytes, assignments
+    
+    # Add more detailed error handling
+    try:
+        resp.raise_for_status()
+        data = resp.json()
+        plot_bytes = base64.b64decode(data.get("plot", ""))
+        assignments = data.get("assignments", [])
+        return plot_bytes, assignments
+    except requests.exceptions.HTTPError as e:
+        if resp.status_code == 500:
+            error_data = resp.json()
+            error_detail = error_data.get("detail", "Internal server error")
+            st.error(f"Server error: {error_detail}")
+        raise
 
 
 def extract_shape_features(params):
