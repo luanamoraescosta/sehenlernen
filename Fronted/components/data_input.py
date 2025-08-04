@@ -139,7 +139,8 @@ def render_data_input():
         cols = st.columns(6)
         for i, img in enumerate(st.session_state["images"]):
             with cols[i % 6]:
-                st.image(img, caption=f"Image {i+1}", width=200)
+                st.image(img, width=200)
+                st.write(f"Size: {img.width} x {img.height} px")
 
     # --- Navigation ---
     if st.button("Next: Feature Selection", key="next_to_feature"):
