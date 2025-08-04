@@ -1,4 +1,3 @@
-# frontend/components/data_input.py
 
 import streamlit as st
 from PIL import Image

@@ -3,6 +3,7 @@ from PIL import Image
 import io
 import numpy as np
 import matplotlib.pyplot as plt
+import zipfile
 
 from utils.api_client import (
     generate_histogram,
@@ -47,9 +48,16 @@ def render_feature_selection():
             key="hist_image_idx"
         )
 
-        # Preview
-        img = images[selected_index]
-        st.image(img, caption=f"Preview: Image {selected_index+1}", width=200)
+         # Preview section
+        if all_images:
+            st.markdown("### Selected Images")
+            cols = st.columns(4)
+            for idx, img in enumerate(images):
+                with cols[idx % 4]:
+                    st.image(img, caption=f"Image {idx+1}", width=150)
+        else:
+            img = images[selected_index]
+            st.image(img, caption=f"Preview: Image {selected_index+1}", width=200)
 
         if st.button("Generate Histogram", key="btn_histogram"):
             params = {
@@ -58,8 +66,13 @@ def render_feature_selection():
                 "all_images": all_images
             }
             hist_list = generate_histogram(params)
-            st.session_state["histogram_images"] = hist_list
-            st.success(f"Generated {len(hist_list)} histograms!")
+            
+            if hist_list:
+                st.session_state["histogram_images"] = hist_list
+                st.success(f"Generated {len(hist_list)} histogram{'s' if len(hist_list) > 1 else ''}!")
+            else:
+                st.warning("No histograms were generated.")
+
 
         if st.session_state.get("histogram_images"):
             st.subheader("Generated Histograms")
@@ -70,6 +83,22 @@ def render_feature_selection():
                     if st.button(f"Enlarge {i+1}", key=f"enlarge_hist_{i}"):
                         st.session_state["fullscreen_image"] = img_bytes
                         st.session_state["fullscreen_section"] = "histogram"
+
+            # Botão para gerar o ZIP
+            if st.button("Download All Histograms", key="download_all_histograms"):
+                zip_data = create_histogram_zip(st.session_state["histogram_images"])
+                st.session_state["histogram_zip"] = zip_data
+                st.success("Histograms ZIP created. Click below to download.")
+
+            # Botão de download (aparece apenas se o ZIP foi gerado)
+            if "histogram_zip" in st.session_state:
+                st.download_button(
+                    label="Download Histograms ZIP",
+                    data=st.session_state["histogram_zip"],
+                    file_name="histograms.zip",
+                    mime="application/zip"
+                )
+
 
     # --- k-means Clustering ---
     with tab2:
@@ -195,8 +224,27 @@ def render_feature_selection():
             st.write("Texture Features:")
             st.write(features)
 
+
+    # --- Fullscreen Image Modal ---
+    if st.session_state.get("fullscreen_image"):
+        st.image(st.session_state["fullscreen_image"], caption="Fullscreen Image", use_container_width=True)
+        if st.button("Close", key="close_fullscreen"):
+            st.session_state["fullscreen_image"] = None
+            st.session_state["fullscreen_section"] = None
+
+
     # --- Navigation ---
     col1, col2 = st.columns([2,1])
     with col2:
         if st.button("Next: Statistical Analysis", key="next_stats"):
             st.session_state["active_section"] = "Statistics Analysis"
+
+def create_histogram_zip(hist_list):
+    zip_buffer = io.BytesIO()
+    with zipfile.ZipFile(zip_buffer, mode='w', compression=zipfile.ZIP_DEFLATED) as zip_file:
+        for i, img_bytes in enumerate(hist_list):
+            zip_file.writestr(f"histogram_{i+1}.png", img_bytes)
+    return zip_buffer.getvalue()
+
+if __name__ == "__main__":
+    render_feature_selection()

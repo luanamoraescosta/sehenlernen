@@ -13,6 +13,8 @@ from skimage.feature import hog, corner_fast
 from skimage.feature.texture import graycomatrix, graycoprops
 from typing import Any, Optional
 from fastapi import UploadFile
+import io
+from io import BytesIO
 
 
 
@@ -22,40 +24,42 @@ from app.services.data_service import load_image, get_all_image_ids, metadata_df
 
 def generate_histogram_service(hist_type: str, image_index: int, all_images: bool) -> list[str]:
     """
-    Generate histograms as base64 strings.
+    Generate histograms as base64 strings using OpenCV for accurate calculation.
     """
-    img_ids = []
-    if all_images:
-        img_ids = get_all_image_ids()
-    else:
-        img_ids = get_all_image_ids()[image_index:image_index+1]
-
+    img_ids = get_all_image_ids() if all_images else get_all_image_ids()[image_index:image_index+1]
     b64_list = []
-    for idx, img_id in enumerate(img_ids):
+
+    for img_id in img_ids:
         img_bytes = load_image(img_id)
-        img = Image.open(io.BytesIO(img_bytes))
-        # Prepare histogram
-        fig, ax = plt.subplots()
+        img = cv2.imdecode(np.frombuffer(img_bytes, np.uint8), cv2.IMREAD_COLOR)
+        if img is None:
+            continue  # Skip invalid images
+
+        plt.figure(figsize=(6, 4))
         if hist_type == "Black and White":
-            img_gray = img.convert("L")
-            arr = np.array(img_gray)
-            ax.hist(arr.ravel(), bins=256, alpha=0.7)
+            gray_img = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+            plt.hist(gray_img.ravel(), 256, [0, 256], color='black', alpha=0.7)
+            plt.title("Grayscale Histogram")
         else:
-            arr = np.array(img)
-            if arr.ndim == 3 and arr.shape[2] >= 3:
-                colors = ("r","g","b")
-                for i, c in enumerate(colors):
-                    ax.hist(arr[..., i].ravel(), bins=256, color=c, alpha=0.5)
-                ax.legend(["R","G","B"])
-            else:
-                ax.hist(arr.ravel(), bins=256, alpha=0.7)
-        ax.set_xlabel("Pixel Intensity")
-        ax.set_ylabel("Frequency")
-        buf = io.BytesIO()
-        fig.savefig(buf, format="png")
-        plt.close(fig)
-        b64 = base64.b64encode(buf.getvalue()).decode()
+            colors = ('b', 'g', 'r')
+            for i, color in enumerate(colors):
+                hist = cv2.calcHist([img], [i], None, [256], [0, 256])
+                plt.plot(hist, color=color, alpha=0.7)
+            plt.xlim([0, 256])
+            plt.title("Color Histogram")
+            plt.legend(["Blue", "Green", "Red"])
+
+        plt.xlabel("Pixel Intensity")
+        plt.ylabel("Frequency")
+        plt.tight_layout()
+
+        # Convert plot to base64
+        buf = BytesIO()
+        plt.savefig(buf, format='png')
+        plt.close()
+        b64 = base64.b64encode(buf.getvalue()).decode('utf-8')
         b64_list.append(b64)
+
     return b64_list
 
 

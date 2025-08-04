@@ -20,6 +20,11 @@ async def save_uploaded_images(files: list[UploadFile]) -> list[str]:
     """
     Save uploaded image files to disk and return list of image IDs (filenames).
     """
+    for f in os.listdir(IMAGE_DIR):
+        file_path = IMAGE_DIR / f
+        if file_path.is_file():
+            file_path.unlink()
+
     image_ids = []
     for file in files:
         contents = await file.read()

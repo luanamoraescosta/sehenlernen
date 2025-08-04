@@ -27,7 +27,7 @@ async def upload_metadata_file(
     Upload metadata CSV/XLSX and return list of column names.
     """
     try:
-        columns = read_metadata(file, delimiter, decimal_sep)
+        columns = await read_metadata(file, delimiter, decimal_sep)
         return {"columns": columns}
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))

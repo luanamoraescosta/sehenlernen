@@ -1,8 +1,9 @@
-# frontend/utils/api_client.py
 
 import os
 import requests
 import base64
+import streamlit as st
+
 
 def _get_base_url():
     """
