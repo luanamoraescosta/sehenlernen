@@ -1,45 +1,51 @@
-from fastapi import APIRouter, UploadFile, File, Form, HTTPException
+# backend/app/routers/data_input.py
+
+from fastapi import APIRouter, UploadFile, Form
+from fastapi.responses import JSONResponse
 from typing import List
-from app.models.requests import ConfigureMetadataRequest
-import pandas as pd
-from app.services.data_service import save_uploaded_images, read_metadata, configure_metadata
+import logging
+
+
+from app.services import data_service
+from app.models.requests import ConfigureMetadataRequest, ReplaceImageRequest
 
 router = APIRouter()
 
 @router.post("/images")
-async def upload_images(files: List[UploadFile] = File(...)):
-    """
-    Upload image files and return their assigned IDs.
-    """
+async def upload_images(files: List[UploadFile]):
     try:
-        image_ids = await save_uploaded_images(files)
+        image_ids = await data_service.save_uploaded_images(files)
         return {"image_ids": image_ids}
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        return JSONResponse(status_code=500, content={"error": str(e)})
 
 @router.post("/metadata")
-async def upload_metadata_file(
-    file: UploadFile = File(...),
+async def upload_metadata(
+    file: UploadFile,
     delimiter: str = Form(","),
     decimal_sep: str = Form(".")
 ):
-    """
-    Upload metadata CSV/XLSX and return list of column names.
-    """
     try:
-        columns = await read_metadata(file, delimiter, decimal_sep)
+        columns = await data_service.read_metadata(file, delimiter, decimal_sep)
         return {"columns": columns}
     except Exception as e:
-        raise HTTPException(status_code=400, detail=str(e))
+        return JSONResponse(status_code=500, content={"error": str(e)})
 
 @router.post("/metadata/configure")
-async def configure_metadata_endpoint(req: ConfigureMetadataRequest):
-    """
-    Accepts an image-ID column name plus a mapping of all other
-    metadata columns→types, stores them in server state.
-    """
+async def configure_metadata(req: ConfigureMetadataRequest):
     try:
-        await configure_metadata(req.image_id_col, req.col_mapping)
-        return {"message": "Metadata configuration saved"}
+        await data_service.configure_metadata(req.image_id_col, req.col_mapping)
+        return {"status": "success"}
     except Exception as e:
+        return JSONResponse(status_code=500, content={"error": str(e)})
+
+@router.post("/replace-image")
+async def replace_image(request: ReplaceImageRequest):
+    try:
+        logging.info(f"Received request to replace image: {request.image_id}")
+        data_service.replace_image(request.image_id, request.image_data_base64)
+        logging.info("Image replacement successful")
+        return {"status": "success"}
+    except Exception as e:
+        logging.error(f"Image replacement failed: {e}")
         raise HTTPException(status_code=500, detail=str(e))

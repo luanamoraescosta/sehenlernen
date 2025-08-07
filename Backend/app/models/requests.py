@@ -12,9 +12,11 @@ class HistogramRequest(BaseModel):
     hist_type: str
     image_index: int
     all_images: bool
+
 class ConfigureMetadataRequest(BaseModel):
     image_id_col: str
     col_mapping: Dict[str, str]
+
 class KMeansRequest(BaseModel):
     n_clusters: int
     random_state: int
@@ -30,3 +32,7 @@ class StatsRequest(BaseModel):
 
 class VisualizationRequest(BaseModel):
     data: Dict[str, Any]
+
+class ReplaceImageRequest(BaseModel):
+    image_id: str
+    image_data_base64: str

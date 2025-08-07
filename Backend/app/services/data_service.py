@@ -1,10 +1,11 @@
-# backend/app/services/data_service.py
-
 import os
 from pathlib import Path
 import shutil
 import pandas as pd
-from fastapi import UploadFile
+from fastapi import UploadFile, HTTPException
+
+from app.utils.image_utils import base64_to_bytes
+from app.utils.csv_utils import read_metadata_file
 
 # Directory to store images
 BASE_DIR = Path(__file__).resolve().parent.parent.parent
@@ -28,7 +29,6 @@ async def save_uploaded_images(files: list[UploadFile]) -> list[str]:
     image_ids = []
     for file in files:
         contents = await file.read()
-        # Use original filename as ID
         filename = file.filename
         file_path = IMAGE_DIR / filename
         with open(file_path, "wb") as f:
@@ -42,18 +42,7 @@ async def read_metadata(file: UploadFile, delimiter: str, decimal_sep: str) -> l
     Store DataFrame in module-level state and return column names.
     """
     global metadata_df
-    contents = await file.read()
-    name = file.filename.lower()
-    if name.endswith(".csv"):
-        metadata_df = pd.read_csv(
-            pd.io.common.BytesIO(contents),
-            delimiter=delimiter,
-            decimal=decimal_sep
-        )
-    else:
-        metadata_df = pd.read_excel(
-            pd.io.common.BytesIO(contents)
-        )
+    metadata_df = read_metadata_file(file, delimiter, decimal_sep)
     return metadata_df.columns.tolist()
 
 async def configure_metadata(id_col: str, mapping: dict) -> None:
@@ -78,3 +67,22 @@ def get_all_image_ids() -> list[str]:
     Return list of all saved image IDs (filenames).
     """
     return [p.name for p in IMAGE_DIR.glob("*") if p.is_file()]
+
+def replace_image(image_id: str, base64_data: str) -> None:
+    file_path = IMAGE_DIR / image_id
+    if not file_path.exists():
+        logging.error(f"Image file not found: {file_path}")
+        raise FileNotFoundError(f"Image {image_id} not found")
+
+    try:
+        img_bytes = base64_to_bytes(base64_data)
+    except Exception as e:
+        logging.error(f"Base64 decoding error: {e}")
+        raise ValueError(f"Invalid base64 image data: {str(e)}")
+
+    try:
+        with open(file_path, "wb") as f:
+            f.write(img_bytes)
+    except Exception as e:
+        logging.error(f"Failed to write image file: {e}")
+        raise IOError(f"Failed to write image file: {str(e)}")
