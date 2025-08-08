@@ -1,8 +1,11 @@
+# Fronted/utils/api_client.py
 
 import os
 import requests
 import base64
 import streamlit as st
+from io import BytesIO
+from PIL import Image
 
 
 def _get_base_url():
@@ -152,3 +155,51 @@ def extract_cooccurrence_texture(params):
     resp = requests.post(url, json=params)
     resp.raise_for_status()
     return resp.json().get("features", [])
+
+
+# -----------------------------
+# NEW: Replace image (cropping)
+# -----------------------------
+def replace_image(image_id: str, pil_image: Image.Image, format_hint: str = "PNG"):
+    """
+    Persistently replace an image on the backend with a cropped version.
+
+    :param image_id: The backend identifier of the image (filename returned from /upload/images).
+    :param pil_image: PIL Image to upload as the replacement.
+    :param format_hint: "PNG" or "JPEG" (defaults to PNG). JPEG will be converted with RGB mode.
+    :raises: requests.exceptions.RequestException on network/HTTP errors.
+    """
+    # Normalize mode for JPEG
+    img_to_save = pil_image
+    if format_hint.upper() in ("JPG", "JPEG") and pil_image.mode in ("RGBA", "P"):
+        img_to_save = pil_image.convert("RGB")
+
+    # Serialize to bytes
+    buf = BytesIO()
+    img_to_save.save(buf, format=format_hint.upper())
+    img_bytes = buf.getvalue()
+    img_b64 = base64.b64encode(img_bytes).decode("utf-8")
+
+    url = f"{_get_base_url()}/upload/replace-image"
+    payload = {"image_id": image_id, "image_data_base64": img_b64}
+
+    resp = requests.post(url, json=payload)
+    try:
+        resp.raise_for_status()
+    except requests.exceptions.HTTPError:
+        # Surface server-provided error details if available
+        try:
+            detail = resp.json().get("detail") or resp.json().get("error")
+        except Exception:
+            detail = None
+        if detail:
+            st.error(f"Failed to replace image '{image_id}': {detail}")
+        else:
+            st.error(f"Failed to replace image '{image_id}'. HTTP {resp.status_code}")
+        raise
+
+    # Optional: confirm success to UI
+    data = resp.json()
+    if data.get("status") != "success":
+        st.warning(f"Image replace returned unexpected response: {data}")
+    return data

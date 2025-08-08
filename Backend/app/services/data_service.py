@@ -1,8 +1,13 @@
+# backend/app/services/data_service.py
+
 import os
+import logging
 from pathlib import Path
 import shutil
 import pandas as pd
 from fastapi import UploadFile, HTTPException
+from PIL import Image
+import io
 
 from app.utils.image_utils import base64_to_bytes
 from app.utils.csv_utils import read_metadata_file
@@ -20,7 +25,9 @@ col_mapping = {}
 async def save_uploaded_images(files: list[UploadFile]) -> list[str]:
     """
     Save uploaded image files to disk and return list of image IDs (filenames).
+    NOTE: Current behavior clears existing images on each upload batch.
     """
+    # Clear existing images
     for f in os.listdir(IMAGE_DIR):
         file_path = IMAGE_DIR / f
         if file_path.is_file():
@@ -68,21 +75,48 @@ def get_all_image_ids() -> list[str]:
     """
     return [p.name for p in IMAGE_DIR.glob("*") if p.is_file()]
 
+def _validate_image_bytes(img_bytes: bytes) -> None:
+    """
+    Ensure the provided bytes decode into a valid image.
+    Raises ValueError if the image cannot be opened.
+    """
+    try:
+        with Image.open(io.BytesIO(img_bytes)) as im:
+            im.verify()  # verify does not decode full image but catches truncation/format errors
+    except Exception as e:
+        raise ValueError(f"Decoded data is not a valid image: {e}") from e
+
 def replace_image(image_id: str, base64_data: str) -> None:
+    """
+    Replace an existing stored image with the provided base64-encoded image bytes.
+    Validates that the bytes form a real image before overwriting.
+    """
     file_path = IMAGE_DIR / image_id
     if not file_path.exists():
         logging.error(f"Image file not found: {file_path}")
         raise FileNotFoundError(f"Image {image_id} not found")
 
+    # Decode base64 → bytes
     try:
         img_bytes = base64_to_bytes(base64_data)
     except Exception as e:
         logging.error(f"Base64 decoding error: {e}")
         raise ValueError(f"Invalid base64 image data: {str(e)}")
 
+    # Validate image bytes
     try:
-        with open(file_path, "wb") as f:
+        _validate_image_bytes(img_bytes)
+    except ValueError as e:
+        logging.error(str(e))
+        raise
+
+    # Overwrite file atomically where possible
+    try:
+        tmp_path = file_path.with_suffix(file_path.suffix + ".tmp")
+        with open(tmp_path, "wb") as f:
             f.write(img_bytes)
+        os.replace(tmp_path, file_path)
+        logging.info(f"Replaced image on disk: {file_path}")
     except Exception as e:
         logging.error(f"Failed to write image file: {e}")
         raise IOError(f"Failed to write image file: {str(e)}")
