@@ -93,7 +93,7 @@ def perform_kmeans(params):
     """
     url = f"{_get_base_url()}/features/kmeans"
     resp = requests.post(url, json=params)
-    
+
     # Add more detailed error handling
     try:
         resp.raise_for_status()
@@ -101,10 +101,13 @@ def perform_kmeans(params):
         plot_bytes = base64.b64decode(data.get("plot", ""))
         assignments = data.get("assignments", [])
         return plot_bytes, assignments
-    except requests.exceptions.HTTPError as e:
+    except requests.exceptions.HTTPError:
         if resp.status_code == 500:
-            error_data = resp.json()
-            error_detail = error_data.get("detail", "Internal server error")
+            try:
+                error_data = resp.json()
+                error_detail = error_data.get("detail", "Internal server error")
+            except Exception:
+                error_detail = "Internal server error"
             st.error(f"Server error: {error_detail}")
         raise
 
@@ -158,7 +161,7 @@ def extract_cooccurrence_texture(params):
 
 
 # -----------------------------
-# NEW: Replace image (cropping)
+# Replace image (cropping)
 # -----------------------------
 def replace_image(image_id: str, pil_image: Image.Image, format_hint: str = "PNG"):
     """
@@ -198,8 +201,36 @@ def replace_image(image_id: str, pil_image: Image.Image, format_hint: str = "PNG
             st.error(f"Failed to replace image '{image_id}'. HTTP {resp.status_code}")
         raise
 
-    # Optional: confirm success to UI
     data = resp.json()
     if data.get("status") != "success":
         st.warning(f"Image replace returned unexpected response: {data}")
     return data
+
+
+# -----------------------------
+# NEW: Extract images from CSV of URLs
+# -----------------------------
+def extract_images_from_csv(csv_file):
+    """
+    Upload a CSV of image URLs, download them server-side, and get a ZIP back.
+
+    :param csv_file: Streamlit UploadedFile (st.file_uploader) for a .csv
+    :return: (zip_bytes: bytes, image_ids: list[str], errors: list[str])
+    """
+    url = f"{_get_base_url()}/upload/extract-from-csv"
+    files = {"file": (csv_file.name, csv_file.getvalue(), csv_file.type or "text/csv")}
+    resp = requests.post(url, files=files)
+    resp.raise_for_status()
+
+    data = resp.json()
+    zip_b64 = data.get("zip_b64", "")
+    image_ids = data.get("image_ids", [])
+    errors = data.get("errors", [])
+
+    try:
+        zip_bytes = base64.b64decode(zip_b64) if zip_b64 else b""
+    except Exception:
+        st.error("Failed to decode ZIP from server.")
+        zip_bytes = b""
+
+    return zip_bytes, image_ids, errors

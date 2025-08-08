@@ -3,11 +3,16 @@
 import os
 import logging
 from pathlib import Path
-import shutil
 import pandas as pd
-from fastapi import UploadFile, HTTPException
+from fastapi import UploadFile
 from PIL import Image
 import io
+import zipfile
+import hashlib
+import mimetypes
+from urllib.parse import urlparse
+
+import requests
 
 from app.utils.image_utils import base64_to_bytes
 from app.utils.csv_utils import read_metadata_file
@@ -21,6 +26,8 @@ IMAGE_DIR.mkdir(parents=True, exist_ok=True)
 metadata_df = None
 image_id_col = None
 col_mapping = {}
+
+# ---- Image upload / metadata config ----
 
 async def save_uploaded_images(files: list[UploadFile]) -> list[str]:
     """
@@ -75,6 +82,8 @@ def get_all_image_ids() -> list[str]:
     """
     return [p.name for p in IMAGE_DIR.glob("*") if p.is_file()]
 
+# ---- Cropping replace ----
+
 def _validate_image_bytes(img_bytes: bytes) -> None:
     """
     Ensure the provided bytes decode into a valid image.
@@ -82,7 +91,7 @@ def _validate_image_bytes(img_bytes: bytes) -> None:
     """
     try:
         with Image.open(io.BytesIO(img_bytes)) as im:
-            im.verify()  # verify does not decode full image but catches truncation/format errors
+            im.verify()
     except Exception as e:
         raise ValueError(f"Decoded data is not a valid image: {e}") from e
 
@@ -110,7 +119,7 @@ def replace_image(image_id: str, base64_data: str) -> None:
         logging.error(str(e))
         raise
 
-    # Overwrite file atomically where possible
+    # Overwrite atomically where possible
     try:
         tmp_path = file_path.with_suffix(file_path.suffix + ".tmp")
         with open(tmp_path, "wb") as f:
@@ -119,4 +128,126 @@ def replace_image(image_id: str, base64_data: str) -> None:
         logging.info(f"Replaced image on disk: {file_path}")
     except Exception as e:
         logging.error(f"Failed to write image file: {e}")
-        raise IOError(f"Failed to write image file: {str(e)}")
+        raise OSError(f"Failed to write image file: {str(e)}")
+
+# ---- Extract images from CSV (with UA + 3s timeout) ----
+
+UA = "SehenLernen/1.0 (+contact@example.com) FastAPI-Extractor"  # put a real contact if you have one
+
+def _make_http_session() -> requests.Session:
+    s = requests.Session()
+    s.headers.update({
+        "User-Agent": UA,
+        "Accept": "image/*, */*;q=0.8",
+    })
+    return s
+
+def _infer_ext_from_response(url: str, resp: requests.Response) -> str:
+    # Prefer Content-Type
+    ctype = (resp.headers.get("Content-Type") or "").split(";")[0].strip().lower()
+    if ctype:
+        ext = mimetypes.guess_extension(ctype)
+        if ext:
+            return ext
+    # Fallback to URL path
+    path = urlparse(url).path
+    _, _, filename = path.rpartition("/")
+    if "." in filename:
+        ext = "." + filename.rsplit(".", 1)[-1]
+        if 1 <= len(ext) <= 5:
+            return ext
+    # Default
+    return ".jpg"
+
+def _safe_filename(url: str, ext: str) -> str:
+    h = hashlib.sha256(url.encode("utf-8")).hexdigest()[:16]
+    if not ext.startswith("."):
+        ext = "." + ext
+    return f"img_{h}{ext}"
+
+async def extract_images_from_csv(file: UploadFile) -> dict:
+    """
+    Given a CSV of image URLs, download them all, store to IMAGE_DIR, and return a ZIP (bytes),
+    list of saved image IDs (filenames), and a list of error messages.
+
+    Returns:
+      {
+        "zip_bytes": bytes,
+        "image_ids": List[str],
+        "errors": List[str]
+      }
+    """
+    # Read CSV into pandas
+    raw = await file.read()
+    try:
+        df = pd.read_csv(io.BytesIO(raw))
+    except Exception as e:
+        logging.exception("Failed to parse CSV for extractor")
+        raise ValueError(f"Failed to parse CSV: {e}")
+
+    if df.shape[1] == 0:
+        raise ValueError("CSV has no columns")
+
+    # Pick URL column: try common names, else first column
+    url_col = None
+    for cand in df.columns:
+        lc = str(cand).strip().lower()
+        if lc in ("url", "image_url", "image", "link", "img", "img_url", "uri"):
+            url_col = cand
+            break
+    if url_col is None:
+        url_col = df.columns[0]
+
+    urls = df[url_col].dropna().astype(str).tolist()
+    if not urls:
+        raise ValueError("No URLs found in the CSV")
+
+    # Clear existing images (match behavior of save_uploaded_images)
+    for f in os.listdir(IMAGE_DIR):
+        file_path = IMAGE_DIR / f
+        if file_path.is_file():
+            file_path.unlink()
+
+    image_ids: list[str] = []
+    errors: list[str] = []
+    session = _make_http_session()
+
+    for i, url in enumerate(urls, start=1):
+        url = url.strip()
+        if not url:
+            continue
+        try:
+            resp = session.get(url, timeout=3, allow_redirects=True)
+            resp.raise_for_status()
+
+            ctype = (resp.headers.get("Content-Type") or "").lower()
+            if not ctype.startswith("image/"):
+                raise ValueError(f"URL is not an image (Content-Type: {ctype or 'unknown'})")
+
+            content = resp.content
+            _validate_image_bytes(content)
+
+            ext = _infer_ext_from_response(url, resp)
+            fname = _safe_filename(url, ext)
+            out_path = IMAGE_DIR / fname
+            with open(out_path, "wb") as f:
+                f.write(content)
+            image_ids.append(fname)
+        except Exception as e:
+            msg = f"Row {i}: {url} -> {e}"
+            logging.warning(msg)
+            errors.append(msg)
+
+    # Build ZIP in-memory of all successfully downloaded images
+    zip_buf = io.BytesIO()
+    with zipfile.ZipFile(zip_buf, mode="w", compression=zipfile.ZIP_DEFLATED) as zf:
+        for img_id in image_ids:
+            p = IMAGE_DIR / img_id
+            if p.exists():
+                zf.write(p, arcname=img_id)
+
+    return {
+        "zip_bytes": zip_buf.getvalue(),
+        "image_ids": image_ids,
+        "errors": errors,
+    }

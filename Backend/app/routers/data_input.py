@@ -1,9 +1,10 @@
 # backend/app/routers/data_input.py
 
-from fastapi import APIRouter, UploadFile, Form, HTTPException
+from fastapi import APIRouter, UploadFile, Form, File, HTTPException
 from fastapi.responses import JSONResponse
 from typing import List
 import logging
+import base64
 
 from app.services import data_service
 from app.models.requests import ConfigureMetadataRequest, ReplaceImageRequest
@@ -58,9 +59,34 @@ async def replace_image(request: ReplaceImageRequest):
     except ValueError as e:
         logging.error(f"Invalid image data: {e}")
         raise HTTPException(status_code=400, detail=str(e))
-    except IOError as e:
+    except OSError as e:
         logging.error(f"Failed to save image: {e}")
         raise HTTPException(status_code=500, detail=str(e))
     except Exception as e:
         logging.error(f"Unexpected error replacing image: {e}")
         raise HTTPException(status_code=500, detail="Internal server error")
+
+# -----------------------------
+# New: Extract images from CSV of URLs
+# -----------------------------
+@router.post("/extract-from-csv")
+async def extract_from_csv(file: UploadFile = File(...)):
+    """
+    Accept a CSV file where each row contains an image URL.
+    Downloads all images, stores them in IMAGE_DIR (clearing old ones),
+    and returns a base64-encoded ZIP plus the list of saved image IDs and any errors.
+    """
+    try:
+        result = await data_service.extract_images_from_csv(file)
+        zip_b64 = base64.b64encode(result["zip_bytes"]).decode("utf-8")
+        return {
+            "zip_b64": zip_b64,
+            "image_ids": result.get("image_ids", []),
+            "errors": result.get("errors", []),
+        }
+    except ValueError as e:
+        logging.error(f"Bad CSV for extractor: {e}")
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        logging.exception("Extractor failed")
+        raise HTTPException(status_code=500, detail="Internal server error during extraction")
