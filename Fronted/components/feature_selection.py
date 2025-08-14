@@ -17,6 +17,7 @@ from utils.api_client import (
     extract_cooccurrence_texture,
     replace_image,                 # persist cropped image to backend
     extract_haralick_features,     # table-style GLCM Haralick
+    extract_lbp_features,          # NEW: LBP feature extraction
 )
 
 
@@ -152,8 +153,15 @@ def render_feature_selection():
     # =========================
     # Normal Tabs (when not cropping)
     # =========================
-    tab1, tab2, tab3, tab4, tab5 = st.tabs(
-        ["Histogram Analysis", "k-means Clustering", "Shape Features", "Haralick Texture", "Co-Occurrence Texture"]
+    tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs(
+        [
+            "Histogram Analysis",
+            "k-means Clustering",
+            "Shape Features",
+            "Haralick Texture",
+            "Co-Occurrence Texture",
+            "Local Binary Patterns (LBP)",  # NEW
+        ]
     )
 
     # --- Histogram Analysis ---
@@ -414,6 +422,102 @@ def render_feature_selection():
             features = extract_cooccurrence_texture({"image_index": tex_idx})
             st.write("Texture Features:")
             st.write(features)
+
+    # --- Local Binary Patterns (LBP) ---
+    with tab6:
+        st.subheader("Local Binary Patterns (LBP)")
+
+        st.caption(
+            "Compute LBP texture histograms. Choose parameters below and run on one, multiple, or all images. "
+            "In single-image mode, a visualization of the LBP-coded image may be shown if available."
+        )
+
+        col_l, col_r = st.columns(2)
+        with col_l:
+            use_all_lbp = st.checkbox("Use all images", value=False, key="lbp_use_all")
+            if use_all_lbp:
+                image_indices_lbp = list(range(len(images)))
+                st.info(f"All {len(images)} images will be processed.")
+            else:
+                image_indices_lbp = st.multiselect(
+                    "Select images",
+                    options=list(range(len(images))),
+                    format_func=lambda x: f"Image {x+1}",
+                    key="lbp_img_indices",
+                )
+
+        with col_r:
+            radius = st.number_input("Radius", min_value=1, max_value=16, value=2, step=1, key="lbp_radius")
+            neighbors = st.selectbox("Number of Neighbors", [8, 16, 24], index=1, key="lbp_neighbors")
+            method = st.selectbox("Method", ["default", "ror", "uniform", "var"], index=2, key="lbp_method")
+            normalize = st.checkbox("Normalize histogram", value=True, key="lbp_normalize")
+
+        if st.button("Compute LBP", key="btn_lbp_compute"):
+            # Validate selection when not "all"
+            if not use_all_lbp and not image_indices_lbp:
+                st.error("Please select at least one image or enable 'Use all images'.")
+            else:
+                with st.spinner("Computing LBP features..."):
+                    try:
+                        payload = {
+                            "image_indices": image_indices_lbp,
+                            "use_all_images": bool(use_all_lbp),
+                            "radius": int(radius),
+                            "num_neighbors": int(neighbors),
+                            "method": method,
+                            "normalize": bool(normalize),
+                        }
+                        result = extract_lbp_features(payload)
+
+                        # Two response modes supported by backend:
+                        if isinstance(result, dict) and result.get("mode") == "single":
+                            # Single image: show histogram values and optional visualization
+                            image_id = result.get("image_id", "image")
+                            bins = int(result.get("bins", 0))
+                            hist = result.get("histogram", [])
+                            st.success(f"LBP histogram computed for {image_id} ({bins} bins).")
+                            st.write(hist)
+
+                            # Optional LBP-coded visualization
+                            lbp_img_bytes = result.get("lbp_image_bytes")
+                            if lbp_img_bytes:
+                                st.image(lbp_img_bytes, caption="LBP-coded image", use_column_width=False, width=400)
+
+                            # Download CSV
+                            cols = [f"bin_{i}" for i in range(len(hist))]
+                            csv_bytes = _to_csv_bytes(["image_id"] + cols, [[image_id] + hist])
+                            st.download_button(
+                                "Download LBP CSV (single image)",
+                                data=csv_bytes,
+                                file_name=f"lbp_{image_id}.csv",
+                                mime="text/csv",
+                                key="btn_dl_lbp_single",
+                            )
+
+                        elif isinstance(result, dict) and result.get("mode") == "multi":
+                            # Multi/all images: tabular output
+                            cols = result.get("columns", [])
+                            rows = result.get("rows", [])
+                            if cols and rows:
+                                st.success(f"Computed LBP histograms for {len(rows)} image(s).")
+                                st.dataframe(
+                                    {cols[i]: [row[i] for row in rows] for i in range(len(cols))},
+                                    use_container_width=True,
+                                )
+                                csv_bytes = _to_csv_bytes(cols, rows)
+                                st.download_button(
+                                    "Download LBP CSV",
+                                    data=csv_bytes,
+                                    file_name="lbp_features.csv",
+                                    mime="text/csv",
+                                    key="btn_dl_lbp_multi",
+                                )
+                            else:
+                                st.warning("No LBP features returned.")
+                        else:
+                            st.warning("Unexpected LBP response format.")
+                    except Exception as e:
+                        st.error(f"LBP computation failed: {e}")
 
     # --- Fullscreen Image Modal (histograms)
     if st.session_state.get("fullscreen_image"):

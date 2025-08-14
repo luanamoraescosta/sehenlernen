@@ -4,7 +4,7 @@ import logging
 from fastapi import APIRouter, HTTPException, UploadFile, File
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Optional
 
 from app.services.feature_service import (
     generate_histogram_service,
@@ -13,6 +13,7 @@ from app.services.feature_service import (
     extract_haralick_service,          # legacy train/predict demo (multipart)
     extract_cooccurrence_service,
     extract_haralick_features_service,  # NEW: table-style Haralick extraction
+    compute_lbp_service,                # NEW: LBP service
 )
 
 from app.models.requests import HaralickExtractRequest  # NEW request model
@@ -29,12 +30,22 @@ class HistogramRequest(BaseModel):
 class KMeansRequest(BaseModel):
     n_clusters: int
     random_state: int
-    selected_images: List[int] = [] 
+    selected_images: List[int] = []
     use_all_images: bool = False
 
 class ShapeRequest(BaseModel):
     method: str
     image_index: int
+
+# LBP request model (supports one, multiple, or all images)
+class LBPRequest(BaseModel):
+    image_indices: List[int] = []         # ignored if use_all_images = True
+    use_all_images: bool = False
+    radius: int = 1
+    num_neighbors: int = 8
+    method: str = "uniform"               # {"default","ror","uniform","var"}
+    normalize: bool = True                # normalize histogram to sum=1
+
 
 # ---- Endpoints ----
 
@@ -167,4 +178,38 @@ def haralick_extract(req: HaralickExtractRequest):
         return result
     except Exception as e:
         logging.exception("Failed to extract Haralick table features")
+        raise HTTPException(status_code=400, detail=str(e))
+
+# ---- NEW: LBP extraction (single or multi-image) ----
+@router.post("/lbp")
+def lbp_extract(req: LBPRequest):
+    """
+    Compute Local Binary Pattern (LBP) histograms.
+
+    Supports:
+      - Single image (returns histogram + an LBP visualization PNG in base64)
+      - Multiple images (returns a table with columns ["image_id","bin_0",...])
+
+    Request (JSON):
+    {
+      "image_indices": [0, 2],        # ignored if use_all_images = true
+      "use_all_images": false,
+      "radius": 1,
+      "num_neighbors": 8,
+      "method": "uniform",            # {"default","ror","uniform","var"}
+      "normalize": true               # histogram normalized to sum=1
+    }
+    """
+    try:
+        result = compute_lbp_service(
+            image_indices=req.image_indices,
+            use_all_images=req.use_all_images,
+            radius=req.radius,
+            num_neighbors=req.num_neighbors,
+            method=req.method,
+            normalize=req.normalize,
+        )
+        return result
+    except Exception as e:
+        logging.exception("Failed to compute LBP features")
         raise HTTPException(status_code=400, detail=str(e))

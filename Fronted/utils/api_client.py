@@ -261,3 +261,59 @@ def extract_haralick_features(params):
     resp = requests.post(url, json=params)
     resp.raise_for_status()
     return resp.json()
+
+
+# -----------------------------
+# NEW: LBP extraction (single/multi/all)
+# -----------------------------
+def extract_lbp_features(params):
+    """
+    Call /features/lbp to compute Local Binary Pattern histograms.
+
+    Example params:
+    {
+      "image_indices": [0, 2],     # ignored if use_all_images is True
+      "use_all_images": false,
+      "radius": 2,
+      "num_neighbors": 16,
+      "method": "uniform",         # {"default","ror","uniform","var"}
+      "normalize": true
+    }
+
+    Returns one of:
+      - Single image mode:
+        {
+          "mode": "single",
+          "image_id": "foo.jpg",
+          "bins": 18,
+          "histogram": [...],
+          "lbp_image_b64": "..." (optional; present if backend returns it)
+        }
+        If "lbp_image_b64" is present, we attach "lbp_image_bytes" with decoded PNG bytes.
+
+      - Multi image/all mode:
+        {
+          "mode": "multi",
+          "columns": ["image_id", "bin_0", "bin_1", ...],
+          "rows": [
+             ["img1.jpg", h0, h1, ...],
+             ["img2.jpg", ...]
+          ]
+        }
+    """
+    url = f"{_get_base_url()}/features/lbp"
+    resp = requests.post(url, json=params)
+    resp.raise_for_status()
+    data = resp.json()
+
+    # If it's single mode and an image visualization is available, decode it
+    if isinstance(data, dict) and data.get("mode") == "single":
+        lbp_b64 = data.get("lbp_image_b64")
+        if lbp_b64:
+            try:
+                data["lbp_image_bytes"] = base64.b64decode(lbp_b64)
+            except Exception:
+                # If decoding fails, don't crash the UI; just omit the bytes
+                data["lbp_image_bytes"] = None
+
+    return data

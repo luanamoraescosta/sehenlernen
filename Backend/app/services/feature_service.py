@@ -37,6 +37,13 @@ except Exception:
 # HOG/FAST are stable here
 from skimage.feature import hog, corner_fast
 
+# LBP (robust import)
+try:
+    from skimage.feature import local_binary_pattern
+except Exception as _:
+    # Older/edge builds rarely differ, but keep a fallback location just in case
+    from skimage.feature.texture import local_binary_pattern  # type: ignore
+
 
 # --------------------------
 # Histograms
@@ -365,3 +372,119 @@ def extract_haralick_features_service(
         matrix = [[r["image_id"], *r["vector"]] for r in rows]
 
     return {"columns": columns, "rows": matrix}
+
+
+# --------------------------
+# NEW: LBP (Local Binary Patterns)
+# --------------------------
+def _lbp_bins_edges(method: str, P: int) -> np.ndarray:
+    """
+    Determine consistent histogram bin edges across images.
+    - 'uniform': skimage maps uniform patterns to [0..P] and non-uniform to P+1 => P+2 bins.
+    - other methods: fallback to [0..2^P - 1] inclusive.
+    Returns bin edges for numpy.histogram (len = n_bins + 1).
+    """
+    if method == "uniform":
+        n_bins = P + 2
+        return np.arange(-0.5, n_bins + 0.5, 1.0)  # centers at 0..P+1
+    else:
+        # default/ror/var — keep bins up to 2**P - 1
+        max_label = (1 << P) - 1
+        return np.arange(-0.5, max_label + 1.5, 1.0)  # centers at 0..max_label
+
+def _normalize_hist(h: np.ndarray) -> np.ndarray:
+    s = float(h.sum())
+    if s <= 0:
+        return h.astype(float)
+    return (h / s).astype(float)
+
+def compute_lbp_service(
+    image_indices: List[int],
+    use_all_images: bool,
+    radius: int,
+    num_neighbors: int,
+    method: str,
+    normalize: bool,
+) -> Dict[str, Any]:
+    """
+    Compute Local Binary Pattern histograms for one, multiple, or all images.
+    - If exactly one image, also return a PNG base64 of the LBP-coded image for visualization.
+    - If multiple, return a table {columns, rows}, each row = [image_id, hist...].
+    """
+    # Validate params
+    if radius < 1:
+        raise ValueError("radius must be >= 1")
+    if num_neighbors < 4:
+        raise ValueError("num_neighbors must be >= 4")
+    if method not in {"default", "ror", "uniform", "var"}:
+        raise ValueError("method must be one of: default, ror, uniform, var")
+
+    all_ids = get_all_image_ids()
+    if not all_ids:
+        raise ValueError("No images available. Please upload images first.")
+
+    if use_all_images:
+        indices = list(range(len(all_ids)))
+    else:
+        indices = [i for i in image_indices if 0 <= i < len(all_ids)]
+
+    if not indices:
+        raise ValueError("No valid images selected.")
+
+    # Precompute consistent bin edges across images
+    bin_edges = _lbp_bins_edges(method, num_neighbors)
+    n_bins = len(bin_edges) - 1
+
+    # Single-image mode: compute and return LBP image + histogram
+    if len(indices) == 1:
+        idx = indices[0]
+        image_id = all_ids[idx]
+        img_bytes = load_image(image_id)
+        pil = Image.open(io.BytesIO(img_bytes)).convert("RGB")
+        arr = np.array(pil)
+        gray = _to_grayscale_uint(arr)
+
+        lbp = local_binary_pattern(gray, P=num_neighbors, R=radius, method=method)
+        # Histogram with fixed bins
+        hist, _ = np.histogram(lbp.ravel(), bins=bin_edges)
+        hist = _normalize_hist(hist) if normalize else hist.astype(float)
+
+        # LBP visualization (scale to 0..255)
+        lbp_min, lbp_max = float(np.min(lbp)), float(np.max(lbp))
+        if lbp_max > lbp_min:
+            lbp_vis = ((lbp - lbp_min) / (lbp_max - lbp_min) * 255.0).astype(np.uint8)
+        else:
+            lbp_vis = np.zeros_like(lbp, dtype=np.uint8)
+
+        # Encode PNG base64
+        lbp_img = Image.fromarray(lbp_vis)
+        buf = io.BytesIO()
+        lbp_img.save(buf, format="PNG")
+        lbp_b64 = base64.b64encode(buf.getvalue()).decode("utf-8")
+
+        return {
+            "mode": "single",
+            "image_id": image_id,
+            "bins": list(range(n_bins)),         # indices 0..n_bins-1
+            "histogram": hist.tolist(),
+            "lbp_image_b64": lbp_b64,
+        }
+
+    # Multi-image mode: build a table
+    columns = ["image_id"] + [f"bin_{i}" for i in range(n_bins)]
+    rows: List[List[Any]] = []
+
+    for idx in indices:
+        image_id = all_ids[idx]
+        img_bytes = load_image(image_id)
+        pil = Image.open(io.BytesIO(img_bytes)).convert("RGB")
+        arr = np.array(pil)
+        gray = _to_grayscale_uint(arr)
+
+        lbp = local_binary_pattern(gray, P=num_neighbors, R=radius, method=method)
+        hist, _ = np.histogram(lbp.ravel(), bins=bin_edges)
+        hist = _normalize_hist(hist) if normalize else hist.astype(float)
+
+        rows.append([image_id, *hist.tolist()])
+
+    return {"mode": "multi", "columns": columns, "rows": rows}

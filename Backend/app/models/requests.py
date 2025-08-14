@@ -1,4 +1,4 @@
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from typing import List, Dict, Any, Optional
 
 class FilterRequest(BaseModel):
@@ -65,3 +65,27 @@ class HaralickExtractRequest(BaseModel):
         "correlation",
         "ASM",
     ]
+
+
+# ---- LBP extraction (new) ----
+class LBPRequest(BaseModel):
+    """
+    Request for computing Local Binary Pattern (LBP) histograms.
+
+    - image_indices: which images to process (by index). Leave empty and set use_all_images=True to process all.
+    - use_all_images: if True, ignore image_indices and process all uploaded images.
+    - radius: LBP radius (>=1)
+    - num_neighbors: number of sampling points (commonly 8, 16)
+    - method: 'default' | 'ror' | 'uniform' | 'var' (skimage.feature.local_binary_pattern)
+    - normalize: if True, return histogram normalized to sum=1; else raw counts.
+
+    Response (planned):
+    - mode='single': { bins, histogram, lbp_image_b64 }
+    - mode='multi':  { columns, rows }  # table form (one row per image)
+    """
+    image_indices: List[int] = Field(default_factory=list)
+    use_all_images: bool = False
+    radius: int = 1
+    num_neighbors: int = 8
+    method: str = "uniform"   # allowed: default | ror | uniform | var
+    normalize: bool = True
