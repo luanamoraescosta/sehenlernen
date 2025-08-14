@@ -234,3 +234,30 @@ def extract_images_from_csv(csv_file):
         zip_bytes = b""
 
     return zip_bytes, image_ids, errors
+
+
+# -----------------------------
+# NEW: Haralick table extraction
+# -----------------------------
+def extract_haralick_features(params):
+    """
+    Call /features/haralick/extract for GLCM-based Haralick features.
+
+    Example params:
+    {
+      "image_indices": [0, 1],
+      "levels": 64,
+      "distances": [1, 2],
+      "angles": [0.0, 0.785398, 1.570796, 2.356194],
+      "resize_width": 256,
+      "resize_height": 256,
+      "average_over_angles": true,
+      "properties": ["contrast","dissimilarity","homogeneity","energy","correlation","ASM"]
+    }
+
+    Returns: {"columns": [...], "rows": [[...], ...]}
+    """
+    url = f"{_get_base_url()}/features/haralick/extract"
+    resp = requests.post(url, json=params)
+    resp.raise_for_status()
+    return resp.json()

@@ -1,6 +1,8 @@
 # Fronted/components/feature_selection.py
 import io
+import csv
 import zipfile
+import math
 
 import numpy as np
 import streamlit as st
@@ -11,9 +13,10 @@ from utils.api_client import (
     generate_histogram,
     perform_kmeans,
     extract_shape_features,
-    extract_haralick_texture,
+    extract_haralick_texture,      # legacy train/predict
     extract_cooccurrence_texture,
-    replace_image,  # persist cropped image to backend
+    replace_image,                 # persist cropped image to backend
+    extract_haralick_features,     # NEW: table-style GLCM Haralick
 )
 
 
@@ -35,6 +38,15 @@ def _init_state():
 def _aspect_ratio_value(label: str):
     mapping = {"Free": None, "1:1 (Square)": (1, 1), "4:3": (4, 3), "16:9": (16, 9)}
     return mapping.get(label, None)
+
+
+def _to_csv_bytes(columns, rows):
+    buf = io.StringIO()
+    writer = csv.writer(buf)
+    writer.writerow(columns)
+    for r in rows:
+        writer.writerow(r)
+    return buf.getvalue().encode("utf-8")
 
 
 # ---------- Main Entry ----------
@@ -79,8 +91,6 @@ def render_feature_selection():
         # Centered container for cropper
         center_col = st.columns([1, 2, 1])[1]
         with center_col:
-            # Cropper shows the image with the draggable/resizable box.
-            # It returns a PIL.Image when return_type="image".
             cropped_raw = st_cropper(
                 img,
                 aspect_ratio=aspect,
@@ -274,6 +284,96 @@ def render_feature_selection():
     # --- Haralick Texture ---
     with tab4:
         st.subheader("Haralick Texture Features")
+
+        # --- NEW: GLCM Haralick for current uploaded images (table output) ---
+        st.markdown("##### Compute GLCM-based Haralick features (current images)")
+        col_a, col_b = st.columns(2)
+        with col_a:
+            # Select images
+            use_all = st.checkbox("Use all images", value=True, key="har_use_all")
+            if use_all:
+                image_indices = list(range(len(images)))
+            else:
+                image_indices = st.multiselect(
+                    "Select images",
+                    options=list(range(len(images))),
+                    format_func=lambda x: f"Image {x+1}",
+                    key="har_img_indices",
+                )
+            # Levels
+            levels = st.selectbox("Quantization levels", [16, 32, 64, 128, 256], index=4, key="har_levels")
+            # Distances
+            distances = st.multiselect("Distances (pixels)", [1, 2, 3, 5], default=[1, 2], key="har_distances")
+        with col_b:
+            # Angles (radians)
+            angle_map = {
+                "0°": 0.0,
+                "45°": math.pi / 4,
+                "90°": math.pi / 2,
+                "135°": 3 * math.pi / 4,
+            }
+            angle_labels = list(angle_map.keys())
+            angles_sel = st.multiselect("Angles", angle_labels, default=angle_labels, key="har_angles_lbls")
+            angles = [angle_map[a] for a in angles_sel]
+            # Resize
+            use_resize = st.checkbox("Resize before analysis", value=False, key="har_use_resize")
+            if use_resize:
+                resize_width = st.number_input("Resize width", min_value=32, max_value=2048, value=256, step=16, key="har_w")
+                resize_height = st.number_input("Resize height", min_value=32, max_value=2048, value=256, step=16, key="har_h")
+            else:
+                resize_width = None
+                resize_height = None
+
+        props = st.multiselect(
+            "Properties",
+            ["contrast", "dissimilarity", "homogeneity", "energy", "correlation", "ASM"],
+            default=["contrast", "dissimilarity", "homogeneity", "energy", "correlation", "ASM"],
+            key="har_props",
+        )
+        avg = st.checkbox("Average across all distances/angles", value=True, key="har_avg")
+
+        if st.button("Compute Haralick (GLCM)", key="btn_haralick_table"):
+            if not image_indices:
+                st.error("Please select at least one image.")
+            else:
+                with st.spinner("Computing Haralick features..."):
+                    try:
+                        payload = {
+                            "image_indices": image_indices,
+                            "levels": int(levels),
+                            "distances": distances if distances else [1],
+                            "angles": angles if angles else [0.0],
+                            "resize_width": int(resize_width) if resize_width else None,
+                            "resize_height": int(resize_height) if resize_height else None,
+                            "average_over_angles": bool(avg),
+                            "properties": props,
+                        }
+                        result = extract_haralick_features(payload)
+                        cols = result.get("columns", [])
+                        rows = result.get("rows", [])
+                        if cols and rows:
+                            st.success(f"Computed features for {len(rows)} image(s).")
+                            st.dataframe(
+                                {cols[i]: [row[i] for row in rows] for i in range(len(cols))},
+                                use_container_width=True,
+                            )
+                            csv_bytes = _to_csv_bytes(cols, rows)
+                            st.download_button(
+                                "Download CSV",
+                                data=csv_bytes,
+                                file_name="haralick_features.csv",
+                                mime="text/csv",
+                                key="btn_dl_haralick_csv",
+                            )
+                        else:
+                            st.warning("No features returned.")
+                    except Exception as e:
+                        st.error(f"Haralick computation failed: {e}")
+
+        st.divider()
+
+        # --- Legacy demo: train/predict via multipart ---
+        st.markdown("##### Legacy demo: Train/Predict (multipart upload)")
         train_imgs = st.file_uploader(
             "Training Images", type=["png", "jpg", "jpeg"], accept_multiple_files=True, key="har_train_imgs"
         )
@@ -282,7 +382,7 @@ def render_feature_selection():
             "Test Images", type=["png", "jpg", "jpeg"], accept_multiple_files=True, key="har_test_imgs"
         )
 
-        if st.button("Extract Haralick", key="btn_haralick"):
+        if st.button("Extract Haralick (legacy)", key="btn_haralick"):
             labels, preds = extract_haralick_texture(
                 {"train_images": train_imgs, "train_labels": train_csv, "test_images": test_imgs}
             )

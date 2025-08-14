@@ -10,9 +10,12 @@ from app.services.feature_service import (
     generate_histogram_service,
     perform_kmeans_service,
     extract_shape_service,
-    extract_haralick_service,
+    extract_haralick_service,          # legacy train/predict demo (multipart)
     extract_cooccurrence_service,
+    extract_haralick_features_service,  # NEW: table-style Haralick extraction
 )
+
+from app.models.requests import HaralickExtractRequest  # NEW request model
 
 router = APIRouter()
 
@@ -97,7 +100,8 @@ async def haralick(
     test_images: List[UploadFile] = File(...)
 ):
     """
-    Extract Haralick texture features, train classifier, and predict test labels.
+    Legacy demo: Extract a simple Haralick feature from training images, train a classifier,
+    and predict labels for test images. (multipart upload)
     """
     try:
         labels, predictions = await extract_haralick_service(
@@ -107,7 +111,7 @@ async def haralick(
         )
         return {"labels": labels, "predictions": predictions}
     except Exception:
-        logging.exception("Failed to extract Haralick texture features")
+        logging.exception("Failed to extract Haralick texture features (legacy)")
         raise HTTPException(status_code=500, detail="Internal server error extracting Haralick features")
 
 @router.post("/cooccurrence")
@@ -121,3 +125,46 @@ def cooccurrence(request: ShapeRequest):
     except Exception:
         logging.exception("Failed to extract co-occurrence features")
         raise HTTPException(status_code=500, detail="Internal server error extracting co-occurrence features")
+
+# ---- NEW: Haralick extraction as table (JSON) ----
+@router.post("/haralick/extract")
+def haralick_extract(req: HaralickExtractRequest):
+    """
+    Compute Haralick (GLCM) features for selected images.
+
+    Request (JSON):
+    {
+      "image_indices": [0, 1],
+      "levels": 64,
+      "distances": [1, 2],
+      "angles": [0.0, 0.785398, 1.570796, 2.356194],
+      "resize_width": 256,
+      "resize_height": 256,
+      "average_over_angles": true,
+      "properties": ["contrast","dissimilarity","homogeneity","energy","correlation","ASM"]
+    }
+
+    Response:
+    {
+      "columns": ["image_id", ...],
+      "rows": [
+        ["img001.jpg", feat1, feat2, ...],
+        ...
+      ]
+    }
+    """
+    try:
+        result = extract_haralick_features_service(
+            image_indices=req.image_indices,
+            levels=req.levels,
+            distances=req.distances,
+            angles=req.angles,
+            resize_width=req.resize_width,
+            resize_height=req.resize_height,
+            average_over_angles=req.average_over_angles,
+            properties=req.properties
+        )
+        return result
+    except Exception as e:
+        logging.exception("Failed to extract Haralick table features")
+        raise HTTPException(status_code=400, detail=str(e))
