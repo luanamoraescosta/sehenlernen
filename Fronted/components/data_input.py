@@ -1,11 +1,17 @@
 # Fronted/components/data_input.py
 
+import io
+from PIL import Image
 import streamlit as st
 from utils import api_client
 
 
 def render_data_input():
     st.header("Data Input")
+
+    # Ensure keys exist
+    st.session_state.setdefault("images", [])                # PIL previews for UI + next screen
+    st.session_state.setdefault("uploaded_image_ids", [])    # IDs stored on backend
 
     # -------------------------
     # Section 1: Upload Images
@@ -18,6 +24,17 @@ def render_data_input():
         key="upload_images_files"
     )
 
+    # Live local previews (persist to session so Feature Selection can see them)
+    if image_files:
+        try:
+            st.session_state["images"] = [
+                Image.open(io.BytesIO(f.getbuffer())) for f in image_files
+            ]
+        except Exception as e:
+            st.error(f"Failed to read selected images for preview: {e}")
+            st.session_state["images"] = []
+
+    # Manual upload button (kept as-is)
     if image_files:
         if st.button("Upload Images", key="btn_upload_images"):
             with st.spinner("Uploading images..."):
@@ -27,6 +44,14 @@ def render_data_input():
                     st.success(f"Uploaded {len(image_ids)} images successfully.")
                 except Exception as e:
                     st.error(f"Failed to upload images: {e}")
+
+    # Show previews if we have any
+    if st.session_state["images"]:
+        st.write("Preview of selected images:")
+        cols = st.columns(6)
+        for i, img in enumerate(st.session_state["images"]):
+            with cols[i % 6]:
+                st.image(img, caption=f"Image {i+1}", width=200)
 
     st.markdown("---")
 
@@ -46,10 +71,13 @@ def render_data_input():
                 try:
                     zip_bytes, image_ids, errors = api_client.extract_images_from_csv(extractor_csv)
                     if zip_bytes:
+                        # Make the ZIP downloadable
                         st.session_state["extractor_zip"] = zip_bytes
+                        # IDs available for downstream steps
                         st.session_state["extractor_image_ids"] = image_ids
                         # Also expose to the rest of the app (Feature Selection etc.)
                         st.session_state["uploaded_image_ids"] = image_ids
+
                         st.success(f"Extracted {len(image_ids)} images successfully.")
                         if errors:
                             st.warning(f"{len(errors)} errors occurred during extraction.")
@@ -73,4 +101,19 @@ def render_data_input():
 
     # Navigation
     if st.button("Next: Feature Selection", key="btn_next_feature_selection"):
-        st.session_state["active_section"] = "Feature Selection"
+        # If user selected files but didn't press "Upload Images", upload now so backend has them
+        if image_files and not st.session_state.get("uploaded_image_ids"):
+            with st.spinner("Uploading images..."):
+                try:
+                    image_ids = api_client.upload_images(image_files)
+                    st.session_state["uploaded_image_ids"] = image_ids
+                    st.success(f"Uploaded {len(image_ids)} images successfully.")
+                except Exception as e:
+                    st.error(f"Failed to upload images: {e}")
+                    return  # stay on this page
+
+        # Require either previews or uploaded IDs to proceed
+        if st.session_state.get("images") or st.session_state.get("uploaded_image_ids"):
+            st.session_state["active_section"] = "Feature Selection"
+        else:
+            st.warning("Please upload at least one image before continuing.")
