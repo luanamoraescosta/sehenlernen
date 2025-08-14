@@ -13,10 +13,10 @@ from utils.api_client import (
     generate_histogram,
     perform_kmeans,
     extract_shape_features,
-    extract_haralick_texture,      # legacy train/predict
+    extract_haralick_texture,      # train/predict workflow (kept, just renamed in UI)
     extract_cooccurrence_texture,
     replace_image,                 # persist cropped image to backend
-    extract_haralick_features,     # NEW: table-style GLCM Haralick
+    extract_haralick_features,     # table-style GLCM Haralick
 )
 
 
@@ -283,10 +283,14 @@ def render_feature_selection():
 
     # --- Haralick Texture ---
     with tab4:
-        st.subheader("Haralick Texture Features")
+        st.subheader("Haralick Texture Tools")
 
-        # --- NEW: GLCM Haralick for current uploaded images (table output) ---
-        st.markdown("##### Compute GLCM-based Haralick features (current images)")
+        # --- GLCM Haralick for current uploaded images (table output) ---
+        st.markdown("##### Analyze Texture Features (GLCM Haralick)")
+        st.caption(
+            "Compute Haralick texture features directly from the images you uploaded above. "
+            "Choose distances, angles, quantization levels, and (optionally) resize for faster or consistent results."
+        )
         col_a, col_b = st.columns(2)
         with col_a:
             # Select images
@@ -372,17 +376,27 @@ def render_feature_selection():
 
         st.divider()
 
-        # --- Legacy demo: train/predict via multipart ---
-        st.markdown("##### Legacy demo: Train/Predict (multipart upload)")
-        train_imgs = st.file_uploader(
-            "Training Images", type=["png", "jpg", "jpeg"], accept_multiple_files=True, key="har_train_imgs"
+        # --- Train & Predict workflow (formerly "legacy") ---
+        st.markdown("##### Train & Predict from Labeled Images")
+        st.caption(
+            "Train a quick classifier using Haralick features:\n"
+            "1) Upload training images, 2) Upload a CSV mapping filenames to labels, 3) Upload test images to classify."
         )
-        train_csv = st.file_uploader("Training Labels CSV", type="csv", key="har_train_csv")
-        test_imgs = st.file_uploader(
-            "Test Images", type=["png", "jpg", "jpeg"], accept_multiple_files=True, key="har_test_imgs"
+        st.caption(
+            "CSV example:\n"
+            "`filename,label`  →  `img1.jpg,classA`  `img2.jpg,classB`"
         )
 
-        if st.button("Extract Haralick (legacy)", key="btn_haralick"):
+        train_imgs = st.file_uploader(
+            "1) Upload Training Images", type=["png", "jpg", "jpeg"], accept_multiple_files=True, key="har_train_imgs"
+        )
+        train_csv = st.file_uploader("2) Upload Training Labels (CSV)", type="csv", key="har_train_csv")
+        test_imgs = st.file_uploader(
+            "3) Upload Test Images", type=["png", "jpg", "jpeg"], accept_multiple_files=True, key="har_test_imgs"
+        )
+
+        # Keep key the same; only label changes
+        if st.button("Train & Predict", key="btn_haralick"):
             labels, preds = extract_haralick_texture(
                 {"train_images": train_imgs, "train_labels": train_csv, "test_images": test_imgs}
             )
