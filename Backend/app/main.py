@@ -9,6 +9,11 @@ from .routers.sampling        import router as sampling_router
 from .routers.features        import router as features_router
 from .routers.stats           import router as stats_router
 from .routers.visualization   import router as visualization_router
+import matplotlib
+
+
+matplotlib.use("Agg")  # Use non-GUI backend suitable for servers
+
 
 # --- App Initialization ---
 app = FastAPI(

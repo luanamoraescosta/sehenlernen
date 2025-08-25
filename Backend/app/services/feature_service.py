@@ -9,7 +9,7 @@ from sklearn.cluster import KMeans
 from skimage.transform import resize as sk_resize
 import cv2
 import pandas as pd
-from typing import Any, Optional, List, Dict
+from typing import Any, Optional, List, Dict, Tuple
 from fastapi import UploadFile
 from io import BytesIO
 
@@ -40,6 +40,9 @@ except Exception:
 # Histograms
 # --------------------------
 def generate_histogram_service(hist_type: str, image_index: int, all_images: bool) -> list[str]:
+    """
+    Generate color or grayscale histograms; returns a list of base64 PNGs.
+    """
     img_ids = get_all_image_ids() if all_images else get_all_image_ids()[image_index:image_index+1]
     b64_list = []
 
@@ -85,6 +88,10 @@ def perform_kmeans_service(
     selected_images: list[int],
     use_all_images: bool
 ) -> tuple[str, list[int]]:
+    """
+    Cluster images using color-histogram features -> PCA(2) -> KMeans.
+    Returns (plot_png_base64, assignments).
+    """
     img_ids = get_all_image_ids()
     if not img_ids:
         raise Exception("No images available for clustering")
@@ -99,6 +106,7 @@ def perform_kmeans_service(
     if not selected_ids:
         raise Exception("No valid images selected for clustering")
 
+    # Extract simple color histograms as features
     features = []
     for img_id in selected_ids:
         img_bytes = load_image(img_id)
@@ -116,6 +124,7 @@ def perform_kmeans_service(
     kmeans = KMeans(n_clusters=n_clusters, random_state=random_state)
     labels = kmeans.fit_predict(reduced)
 
+    # Plot
     fig, ax = plt.subplots()
     for i in range(n_clusters):
         ax.scatter(reduced[labels == i, 0], reduced[labels == i, 1], label=f"Cluster {i}", alpha=0.7)
@@ -132,9 +141,45 @@ def perform_kmeans_service(
 
 
 # --------------------------
-# Shape features
+# Shape features (HOG / SIFT / FAST)
 # --------------------------
-def extract_shape_service(method: str, image_index: int) -> tuple[list[Any], Optional[str]]:
+def _as_tuple2(x: Optional[List[int]], default: Tuple[int, int]) -> Tuple[int, int]:
+    """
+    Convert a 2-length list to a tuple; otherwise return default.
+    """
+    if isinstance(x, (list, tuple)) and len(x) == 2:
+        try:
+            return int(x[0]), int(x[1])
+        except Exception:
+            return default
+    return default
+
+
+def extract_shape_service(
+    method: str,
+    image_index: int,
+    orientations: Optional[int] = None,
+    pixels_per_cell: Optional[List[int]] = None,
+    cells_per_block: Optional[List[int]] = None,
+    resize_width: Optional[int] = None,
+    resize_height: Optional[int] = None,
+    visualize: Optional[bool] = None,
+) -> tuple[list[Any], Optional[str]]:
+    """
+    Extract shape/structure features and optional visualization for a single image.
+
+    Supported methods:
+      - "HOG": accepts optional params:
+            orientations (int, default 9)
+            pixels_per_cell [h,w] (default [8,8])
+            cells_per_block [y,x] (default [2,2])
+            resize_width / resize_height (pre-resize; defaults to 64x128 legacy if not provided)
+            visualize (bool, default True)
+      - "SIFT": returns descriptor vectors (or empty if none)
+      - "FAST": returns list of keypoint coordinates
+
+    Returns: (features, visualization_base64 or None)
+    """
     img_ids = get_all_image_ids()
     if not img_ids:
         return [], None
@@ -147,19 +192,48 @@ def extract_shape_service(method: str, image_index: int) -> tuple[list[Any], Opt
     viz_b64: Optional[str] = None
 
     if method == "HOG":
+        # Defaults (preserve previous behavior if not provided)
+        orientations_val = int(orientations) if orientations is not None else 9
+        ppc = _as_tuple2(pixels_per_cell, (8, 8))
+        cpb = _as_tuple2(cells_per_block, (2, 2))
+        visualize_val = True if visualize is None else bool(visualize)
+
+        # Prepare grayscale and resize
         img_gray = img.convert('L')
-        img_resized = sk_resize(np.array(img_gray), (128, 64))
-        fd, hog_image = hog(
-            img_resized, orientations=9, pixels_per_cell=(8, 8),
-            cells_per_block=(2, 2), visualize=True
-        )
-        features = fd.tolist()
-        fig, ax = plt.subplots()
-        ax.imshow(hog_image, cmap='gray')
-        buf = io.BytesIO()
-        fig.savefig(buf, format='png')
-        plt.close(fig)
-        viz_b64 = base64.b64encode(buf.getvalue()).decode()
+        if resize_width and resize_height:
+            img_resized = sk_resize(np.array(img_gray), (int(resize_height), int(resize_width)))
+        else:
+            # Legacy default used before: (128, 64)
+            img_resized = sk_resize(np.array(img_gray), (128, 64))
+
+        # skimage.hog expects float image typically in [0,1]; sk_resize returns float in [0,1]
+        if visualize_val:
+            fd, hog_image = hog(
+                img_resized,
+                orientations=orientations_val,
+                pixels_per_cell=ppc,
+                cells_per_block=cpb,
+                visualize=True
+            )
+            features = fd.tolist()
+            # Encode HOG visualization
+            fig, ax = plt.subplots()
+            ax.imshow(hog_image, cmap='gray')
+            ax.axis('off')
+            buf = io.BytesIO()
+            fig.savefig(buf, format='png', bbox_inches='tight', pad_inches=0)
+            plt.close(fig)
+            viz_b64 = base64.b64encode(buf.getvalue()).decode()
+        else:
+            fd = hog(
+                img_resized,
+                orientations=orientations_val,
+                pixels_per_cell=ppc,
+                cells_per_block=cpb,
+                visualize=False
+            )
+            features = fd.tolist()
+            viz_b64 = None
 
     elif method == "SIFT":
         img_gray = img.convert('L')
@@ -430,6 +504,10 @@ def extract_contours_service(
     return_bounding_boxes: bool = True,
     return_hierarchy: bool = False,
 ) -> Dict[str, Any]:
+    """
+    Extract contours from a binary/grayscale image using OpenCV findContours.
+    Returns contour point sets, areas, optional bounding boxes & hierarchy, and a PNG overlay.
+    """
     mode_map = {
         "RETR_EXTERNAL": cv2.RETR_EXTERNAL,
         "RETR_LIST": cv2.RETR_LIST,
@@ -454,31 +532,39 @@ def extract_contours_service(
     if arr is None:
         raise ValueError("Could not decode image.")
 
+    # Simple fixed threshold to binary; can be enhanced later to Otsu/Adaptive if needed
     _, binary = cv2.threshold(arr, 127, 255, cv2.THRESH_BINARY)
+
     contours, hierarchy = cv2.findContours(binary, mode_map[mode], method_map[method])
 
-    results = []
+    kept_contours = []
     bounding_boxes = []
     areas = []
     for c in contours:
         area = float(cv2.contourArea(c))
-        if area < min_area:
+        if area < (min_area or 0):
             continue
         pts = c.squeeze().tolist()
-        results.append(pts)
+        kept_contours.append(c)  # keep cv2 contour for drawing later
         areas.append(area)
         if return_bounding_boxes:
             x, y, w, h = cv2.boundingRect(c)
             bounding_boxes.append([int(x), int(y), int(w), int(h)])
 
+    # Build results as plain lists
+    results_points = [kc.squeeze().tolist() for kc in kept_contours]
+
+    # Make overlay that only shows kept contours (green)
     overlay = cv2.cvtColor(arr, cv2.COLOR_GRAY2BGR)
-    cv2.drawContours(overlay, contours, -1, (0, 255, 0), 2)
+    if kept_contours:
+        cv2.drawContours(overlay, kept_contours, -1, (0, 255, 0), 2)
+    overlay_rgb = cv2.cvtColor(overlay, cv2.COLOR_BGR2RGB)
     buf = io.BytesIO()
-    Image.fromarray(overlay).save(buf, format="PNG")
+    Image.fromarray(overlay_rgb).save(buf, format="PNG")
     viz_b64 = base64.b64encode(buf.getvalue()).decode("utf-8")
 
     return {
-        "contours": results,
+        "contours": results_points,
         "bounding_boxes": bounding_boxes if return_bounding_boxes else None,
         "areas": areas,
         "hierarchy": hierarchy.tolist() if return_hierarchy and hierarchy is not None else None,

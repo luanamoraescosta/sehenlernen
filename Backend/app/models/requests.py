@@ -30,8 +30,39 @@ class KMeansRequest(BaseModel):
 
 
 class ShapeRequest(BaseModel):
-    method: str
+    """
+    Generic shape/feature extraction request.
+
+    When method == "HOG", the optional parameters below (orientations, pixels_per_cell,
+    cells_per_block, resize_* and visualize) will be used if provided; otherwise
+    backend defaults are applied.
+
+    For other methods ("SIFT", "FAST"), these optional fields are ignored.
+    """
+    method: Literal["HOG", "SIFT", "FAST"]
     image_index: int
+
+    # --- Optional HOG parameters (used only when method == "HOG") ---
+    orientations: Optional[int] = Field(
+        default=None, ge=1, le=32, description="Number of orientation bins (default: 9)"
+    )
+    pixels_per_cell: Optional[List[int]] = Field(
+        default=None, min_items=2, max_items=2,
+        description="Cell size [px_h, px_w] (default: [8, 8])"
+    )
+    cells_per_block: Optional[List[int]] = Field(
+        default=None, min_items=2, max_items=2,
+        description="Block size in cells [cells_y, cells_x] (default: [2, 2])"
+    )
+    resize_width: Optional[int] = Field(
+        default=None, ge=8, le=4096, description="Optional pre-extraction resize width"
+    )
+    resize_height: Optional[int] = Field(
+        default=None, ge=8, le=4096, description="Optional pre-extraction resize height"
+    )
+    visualize: Optional[bool] = Field(
+        default=None, description="Return HOG visualization image (default: True)"
+    )
 
 
 class StatsRequest(BaseModel):

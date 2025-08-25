@@ -19,6 +19,7 @@ from utils.api_client import (
     extract_haralick_features,     # table-style GLCM Haralick
     extract_lbp_features,          # NEW: LBP feature extraction
     extract_contours,              # NEW: Contour extraction
+    extract_hog_features,          # NEW: HOG convenience call
 )
 
 
@@ -253,6 +254,65 @@ def render_feature_selection():
                     file_name="histograms.zip",
                     mime="application/zip",
                 )
+
+        # -------------------------------
+        # NEW: HOG within Histogram Tab
+        # -------------------------------
+        st.divider()
+        st.markdown("### HOG (Histogram of Oriented Gradients)")
+        st.caption(
+            "HOG summarizes local gradient directions in small cells to capture object structure and edges. "
+            "It’s commonly used for detection and classification. Configure the parameters and compute HOG "
+            "for the selected image above."
+        )
+        col_hl, col_hr = st.columns(2)
+        with col_hl:
+            hog_orient = st.number_input("Orientation bins", min_value=3, max_value=18, value=9, step=1, key="hog_orient")
+            ppc_x = st.number_input("Pixels per cell — X", min_value=4, max_value=64, value=8, step=1, key="hog_ppc_x")
+            ppc_y = st.number_input("Pixels per cell — Y", min_value=4, max_value=64, value=8, step=1, key="hog_ppc_y")
+        with col_hr:
+            cpb_x = st.number_input("Cells per block — X", min_value=1, max_value=8, value=2, step=1, key="hog_cpb_x")
+            cpb_y = st.number_input("Cells per block — Y", min_value=1, max_value=8, value=2, step=1, key="hog_cpb_y")
+            use_resize = st.checkbox("Resize before HOG", value=False, key="hog_use_resize")
+            if use_resize:
+                hog_w = st.number_input("Resize width", min_value=32, max_value=2048, value=128, step=16, key="hog_w")
+                hog_h = st.number_input("Resize height", min_value=32, max_value=2048, value=64, step=16, key="hog_h")
+            else:
+                hog_w = None
+                hog_h = None
+
+        if st.button("Compute HOG for Selected Image", key="btn_hog_compute"):
+            with st.spinner("Computing HOG..."):
+                try:
+                    # NOTE: The backend currently uses default HOG params.
+                    # We pass the UI params for forward-compatibility. If the backend
+                    # ignores them, results reflect its defaults until we wire it up.
+                    result = extract_hog_features(
+                        image_index=int(selected_index),
+                        orientations=int(hog_orient),
+                        pixels_per_cell=(int(ppc_x), int(ppc_y)),
+                        cells_per_block=(int(cpb_x), int(cpb_y)),
+                        resize_width=int(hog_w) if hog_w else None,
+                        resize_height=int(hog_h) if hog_h else None,
+                        visualize=True,
+                    )
+                    feats = result.get("features", []) or []
+                    st.success(f"HOG feature vector length: {len(feats)}")
+                    if result.get("visualization") is not None:
+                        st.image(result["visualization"], caption="HOG Visualization", width=400)
+
+                    # Download CSV for the single vector
+                    cols = [f"f{i}" for i in range(len(feats))]
+                    csv_bytes = _to_csv_bytes(["image_index"] + cols, [[int(selected_index)] + feats])
+                    st.download_button(
+                        "Download HOG Features (CSV)",
+                        data=csv_bytes,
+                        file_name=f"hog_image_{int(selected_index)+1}.csv",
+                        mime="text/csv",
+                        key="btn_dl_hog_csv",
+                    )
+                except Exception as e:
+                    st.error(f"HOG computation failed: {e}")
 
     # --- k-means Clustering ---
     with tab2:

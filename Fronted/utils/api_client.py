@@ -90,6 +90,10 @@ def perform_kmeans(params):
 
 
 def extract_shape_features(params):
+    """
+    Generic shape feature call (HOG/SIFT/FAST) — pass:
+      {"method": "HOG"|"SIFT"|"FAST", "image_index": int, ...optional HOG params...}
+    """
     url = f"{_get_base_url()}/features/shape"
     resp = requests.post(url, json=params)
     resp.raise_for_status()
@@ -227,15 +231,6 @@ def extract_contours(params):
       "return_bounding_boxes": true,
       "return_hierarchy": false
     }
-
-    Returns:
-    {
-      "contours": [[(x,y), ...], ...],
-      "bounding_boxes": [[x,y,w,h], ...],
-      "areas": [...],
-      "hierarchy": [...],
-      "visualization": "..."  # base64-encoded PNG
-    }
     """
     url = f"{_get_base_url()}/features/contours"
     resp = requests.post(url, json=params)
@@ -249,3 +244,51 @@ def extract_contours(params):
             data["visualization_bytes"] = None
 
     return data
+
+
+# -----------------------------
+# NEW: HOG convenience wrapper
+# -----------------------------
+def extract_hog_features(
+    image_index,
+    orientations=None,
+    pixels_per_cell=None,   # e.g., [8, 8]
+    cells_per_block=None,   # e.g., [2, 2]
+    resize_width=None,
+    resize_height=None,
+    visualize=True,
+):
+    """
+    Convenience wrapper for HOG using /features/shape with method="HOG".
+    Returns: {"features": [...], "visualization": bytes|None}
+    """
+    url = f"{_get_base_url()}/features/shape"
+    payload = {
+        "method": "HOG",
+        "image_index": int(image_index),
+        "visualize": bool(visualize),
+    }
+    if orientations is not None:
+        payload["orientations"] = int(orientations)
+    if pixels_per_cell is not None and isinstance(pixels_per_cell, (list, tuple)) and len(pixels_per_cell) == 2:
+        payload["pixels_per_cell"] = [int(pixels_per_cell[0]), int(pixels_per_cell[1])]
+    if cells_per_block is not None and isinstance(cells_per_block, (list, tuple)) and len(cells_per_block) == 2:
+        payload["cells_per_block"] = [int(cells_per_block[0]), int(cells_per_block[1])]
+    if resize_width is not None and resize_height is not None:
+        payload["resize_width"] = int(resize_width)
+        payload["resize_height"] = int(resize_height)
+
+    resp = requests.post(url, json=payload)
+    resp.raise_for_status()
+    data = resp.json()
+
+    result = {"features": data.get("features", [])}
+    if data.get("visualization"):
+        try:
+            result["visualization"] = base64.b64decode(data["visualization"])
+        except Exception:
+            result["visualization"] = None
+    else:
+        result["visualization"] = None
+
+    return result

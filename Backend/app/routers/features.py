@@ -4,7 +4,7 @@ import logging
 from fastapi import APIRouter, HTTPException, UploadFile, File
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any
 
 from app.services.feature_service import (
     generate_histogram_service,
@@ -12,15 +12,16 @@ from app.services.feature_service import (
     extract_shape_service,
     extract_haralick_service,          # legacy train/predict demo (multipart)
     extract_cooccurrence_service,
-    extract_haralick_features_service,  # NEW: table-style Haralick extraction
-    compute_lbp_service,                # NEW: LBP service
-    extract_contours_service,           # NEW: Contour extraction
+    extract_haralick_features_service,  # table-style Haralick extraction
+    compute_lbp_service,                # LBP service
+    extract_contours_service,           # Contour extraction
 )
 
 from app.models.requests import (
     HaralickExtractRequest,
     LBPRequest,
-    ContourRequest,                     # NEW request model
+    ContourRequest,                     # contour request model
+    ShapeRequest,                       # NEW: import enhanced ShapeRequest (with HOG params)
 )
 
 router = APIRouter()
@@ -40,15 +41,13 @@ class KMeansRequest(BaseModel):
     use_all_images: bool = False
 
 
-class ShapeRequest(BaseModel):
-    method: str
-    image_index: int
-
-
 # ---- Endpoints ----
 
 @router.post("/histogram")
 async def histogram(request: HistogramRequest):
+    """
+    Generate one or more histograms for the uploaded images (color or grayscale).
+    """
     try:
         b64_list = generate_histogram_service(
             hist_type=request.hist_type,
@@ -66,6 +65,9 @@ async def histogram(request: HistogramRequest):
 
 @router.post("/kmeans")
 def kmeans(request: KMeansRequest):
+    """
+    Perform K-means clustering on selected images (color-histogram features + PCA2 for plotting).
+    """
     try:
         plot_b64, assignments = perform_kmeans_service(
             n_clusters=request.n_clusters,
@@ -81,10 +83,26 @@ def kmeans(request: KMeansRequest):
 
 @router.post("/shape")
 def shape_features(request: ShapeRequest):
+    """
+    Extract shape/structure features from a single image.
+
+    Supported methods:
+      - "HOG": can accept optional parameters:
+          orientations, pixels_per_cell [h,w], cells_per_block [y,x],
+          resize_width, resize_height, visualize
+      - "SIFT", "FAST": ignore the optional HOG parameters
+    """
     try:
         features, viz_b64 = extract_shape_service(
             method=request.method,
-            image_index=request.image_index
+            image_index=request.image_index,
+            # Optional HOG params (service will ignore when method != "HOG")
+            orientations=request.orientations,
+            pixels_per_cell=request.pixels_per_cell,
+            cells_per_block=request.cells_per_block,
+            resize_width=request.resize_width,
+            resize_height=request.resize_height,
+            visualize=request.visualize,
         )
         response: Dict[str, Any] = {"features": features}
         if viz_b64:
@@ -101,6 +119,10 @@ async def haralick(
     train_labels: UploadFile = File(...),
     test_images: List[UploadFile] = File(...)
 ):
+    """
+    Legacy demo: Extract a simple Haralick feature from training images, train a classifier,
+    and predict labels for test images. (multipart upload)
+    """
     try:
         labels, predictions = await extract_haralick_service(
             train_images=train_images,
@@ -115,6 +137,9 @@ async def haralick(
 
 @router.post("/cooccurrence")
 def cooccurrence(request: ShapeRequest):
+    """
+    Extract gray-level co-occurrence features from a single image (fixed params).
+    """
     try:
         features = extract_cooccurrence_service(image_index=request.image_index)
         return {"features": features}
@@ -126,6 +151,9 @@ def cooccurrence(request: ShapeRequest):
 # ---- Haralick extraction (table) ----
 @router.post("/haralick/extract")
 def haralick_extract(req: HaralickExtractRequest):
+    """
+    Compute GLCM (Haralick) properties for a set of uploaded images; returns table-like JSON.
+    """
     try:
         result = extract_haralick_features_service(
             image_indices=req.image_indices,
@@ -146,6 +174,9 @@ def haralick_extract(req: HaralickExtractRequest):
 # ---- LBP extraction ----
 @router.post("/lbp")
 def lbp_extract(req: LBPRequest):
+    """
+    Compute LBP histograms for one, multiple, or all images.
+    """
     try:
         result = compute_lbp_service(
             image_indices=req.image_indices,
@@ -161,7 +192,7 @@ def lbp_extract(req: LBPRequest):
         raise HTTPException(status_code=400, detail=str(e))
 
 
-# ---- NEW: Contour extraction ----
+# ---- Contour extraction ----
 @router.post("/contours")
 def contour_extract(req: ContourRequest):
     """
