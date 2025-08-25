@@ -17,31 +17,22 @@ from app.services.data_service import load_image, get_all_image_ids, metadata_df
 
 # ---------------------------------------------------------
 # Robust GLCM imports across scikit-image versions/builds
-# We alias everything to: greycomatrix, greycoprops
 # ---------------------------------------------------------
 try:
-    # Some versions export directly from skimage.feature (British spelling)
     from skimage.feature import greycomatrix, greycoprops  # type: ignore
 except Exception:
     try:
-        # American spelling exported from skimage.feature
         from skimage.feature import graycomatrix as greycomatrix, graycoprops as greycoprops  # type: ignore
     except Exception:
         try:
-            # British spelling under the texture submodule
             from skimage.feature.texture import greycomatrix, greycoprops  # type: ignore
         except Exception:
-            # American spelling under the texture submodule
             from skimage.feature.texture import graycomatrix as greycomatrix, graycoprops as greycoprops  # type: ignore
 
-# HOG/FAST are stable here
 from skimage.feature import hog, corner_fast
-
-# LBP (robust import)
 try:
     from skimage.feature import local_binary_pattern
-except Exception as _:
-    # Older/edge builds rarely differ, but keep a fallback location just in case
+except Exception:
     from skimage.feature.texture import local_binary_pattern  # type: ignore
 
 
@@ -49,9 +40,6 @@ except Exception as _:
 # Histograms
 # --------------------------
 def generate_histogram_service(hist_type: str, image_index: int, all_images: bool) -> list[str]:
-    """
-    Generate histograms as base64 strings using OpenCV for accurate calculation.
-    """
     img_ids = get_all_image_ids() if all_images else get_all_image_ids()[image_index:image_index+1]
     b64_list = []
 
@@ -59,7 +47,7 @@ def generate_histogram_service(hist_type: str, image_index: int, all_images: boo
         img_bytes = load_image(img_id)
         img = cv2.imdecode(np.frombuffer(img_bytes, np.uint8), cv2.IMREAD_COLOR)
         if img is None:
-            continue  # Skip invalid images
+            continue
 
         plt.figure(figsize=(6, 4))
         if hist_type == "Black and White":
@@ -79,7 +67,6 @@ def generate_histogram_service(hist_type: str, image_index: int, all_images: boo
         plt.ylabel("Frequency")
         plt.tight_layout()
 
-        # Convert plot to base64
         buf = BytesIO()
         plt.savefig(buf, format='png')
         plt.close()
@@ -98,26 +85,20 @@ def perform_kmeans_service(
     selected_images: list[int],
     use_all_images: bool
 ) -> tuple[str, list[int]]:
-    """
-    Performs K-means clustering on the selected images and returns the plot and label assignments.
-    """
     img_ids = get_all_image_ids()
     if not img_ids:
         raise Exception("No images available for clustering")
 
-    # Determine which images to use
     if use_all_images or not selected_images:
         selected_ids = img_ids
         selected_indices = list(range(len(img_ids)))
     else:
-        # Filter valid indices
         selected_indices = [i for i in selected_images if 0 <= i < len(img_ids)]
         selected_ids = [img_ids[i] for i in selected_indices]
 
     if not selected_ids:
         raise Exception("No valid images selected for clustering")
 
-    # Extract features from selected images (color histograms)
     features = []
     for img_id in selected_ids:
         img_bytes = load_image(img_id)
@@ -128,7 +109,6 @@ def perform_kmeans_service(
         hist_b = np.histogram(np.array(b), bins=32)[0]
         features.append(np.concatenate([hist_r, hist_g, hist_b]))
 
-    # K-means processing
     X = np.vstack(features)
     scaled = StandardScaler().fit_transform(X)
     pca = PCA(n_components=2)
@@ -136,7 +116,6 @@ def perform_kmeans_service(
     kmeans = KMeans(n_clusters=n_clusters, random_state=random_state)
     labels = kmeans.fit_predict(reduced)
 
-    # Generate plot
     fig, ax = plt.subplots()
     for i in range(n_clusters):
         ax.scatter(reduced[labels == i, 0], reduced[labels == i, 1], label=f"Cluster {i}", alpha=0.7)
@@ -153,12 +132,9 @@ def perform_kmeans_service(
 
 
 # --------------------------
-# Shape features (HOG / SIFT / FAST)
+# Shape features
 # --------------------------
 def extract_shape_service(method: str, image_index: int) -> tuple[list[Any], Optional[str]]:
-    """
-    Extract shape features and optional visualization.
-    """
     img_ids = get_all_image_ids()
     if not img_ids:
         return [], None
@@ -178,7 +154,6 @@ def extract_shape_service(method: str, image_index: int) -> tuple[list[Any], Opt
             cells_per_block=(2, 2), visualize=True
         )
         features = fd.tolist()
-        # Plot hog image
         fig, ax = plt.subplots()
         ax.imshow(hog_image, cmap='gray')
         buf = io.BytesIO()
@@ -203,7 +178,6 @@ def extract_shape_service(method: str, image_index: int) -> tuple[list[Any], Opt
         arr = np.array(img_gray)
         kp = corner_fast(arr, threshold=30, nonmax_suppression=True)
         features = [list(point) for point in kp]
-        # Draw keypoints (cv2.KeyPoint expects (x, y, size))
         keypoints = [cv2.KeyPoint(float(p[1]), float(p[0]), 1) for p in kp]
         img_kp = cv2.drawKeypoints(arr, keypoints, None, color=(0, 255, 0))
         pil_kp = Image.fromarray(img_kp)
@@ -215,13 +189,9 @@ def extract_shape_service(method: str, image_index: int) -> tuple[list[Any], Opt
 
 
 # --------------------------
-# Legacy Haralick: train/predict demo
+# Legacy Haralick
 # --------------------------
 async def extract_haralick_service(train_images: list, train_labels: UploadFile, test_images: list) -> tuple[list, list]:
-    """
-    Extract Haralick features (contrast only in this example), train classifier, and predict test labels.
-    """
-    # Load training images
     X_train = []
     for f in train_images:
         data = await f.read()
@@ -230,13 +200,10 @@ async def extract_haralick_service(train_images: list, train_labels: UploadFile,
         gm = greycomatrix(arr, distances=[1], angles=[0], levels=256, symmetric=True, normed=True)
         props = greycoprops(gm, 'contrast')[0, 0]
         X_train.append([props])
-    # Load labels
     labels_df = pd.read_csv(train_labels.file)
     y_train = labels_df.iloc[:, 0].tolist()
-    # Train classifier
     from sklearn.ensemble import RandomForestClassifier
     clf = RandomForestClassifier(random_state=42).fit(X_train, y_train)
-    # Extract test features
     X_test = []
     for f in test_images:
         data = await f.read()
@@ -250,12 +217,9 @@ async def extract_haralick_service(train_images: list, train_labels: UploadFile,
 
 
 # --------------------------
-# Co-occurrence (GLCM) features (multi-prop averaged)
+# Co-occurrence features
 # --------------------------
 def extract_cooccurrence_service(image_index: int) -> list[float]:
-    """
-    Extract co-occurrence texture features for a given image.
-    """
     img_ids = get_all_image_ids()
     img_bytes = load_image(img_ids[image_index])
     img = Image.open(io.BytesIO(img_bytes)).convert('L')
@@ -270,13 +234,10 @@ def extract_cooccurrence_service(image_index: int) -> list[float]:
 
 
 # --------------------------
-# New: Haralick extraction for arbitrary images (table-like payload)
+# Haralick extraction (table)
 # --------------------------
 def _to_grayscale_uint(arr: np.ndarray) -> np.ndarray:
-    """
-    Convert RGB/RGBA/gray array -> 8-bit grayscale.
-    """
-    if arr.ndim == 2:  # already gray
+    if arr.ndim == 2:
         gray = arr
     elif arr.ndim == 3 and arr.shape[2] >= 3:
         r, g, b = arr[..., 0], arr[..., 1], arr[..., 2]
@@ -285,15 +246,14 @@ def _to_grayscale_uint(arr: np.ndarray) -> np.ndarray:
         raise ValueError("Unsupported image shape for grayscale conversion")
     return np.clip(gray, 0, 255).astype(np.uint8)
 
+
 def _quantize(gray: np.ndarray, levels: int) -> np.ndarray:
-    """
-    Quantize 8-bit gray [0..255] to [0..levels-1].
-    """
     if levels == 256:
         return gray
     factor = 256.0 / float(levels)
     q = np.floor(gray / factor).astype(np.uint8)
     return q
+
 
 def extract_haralick_features_service(
     image_indices: List[int],
@@ -305,10 +265,6 @@ def extract_haralick_features_service(
     average_over_angles: bool,
     properties: List[str],
 ) -> Dict[str, Any]:
-    """
-    Compute GLCM properties for selected images.
-    Returns a dict with 'columns' and 'rows' (each row = [image_id, feat...]).
-    """
     valid_props = {"contrast", "dissimilarity", "homogeneity", "energy", "correlation", "ASM"}
     props = [p for p in properties if p in valid_props]
     if not props:
@@ -324,16 +280,10 @@ def extract_haralick_features_service(
         img_bytes = load_image(image_id)
         pil = Image.open(io.BytesIO(img_bytes)).convert("RGB")
         arr = np.array(pil)
-
-        # Optional resize for speed/consistency
         if resize_width and resize_height:
             arr = (sk_resize(arr, (resize_height, resize_width), anti_aliasing=True) * 255).astype(np.uint8)
-
-        # To gray + quantize
         gray = _to_grayscale_uint(arr)
         gray_q = _quantize(gray, levels)
-
-        # Build GLCM
         glcm = greycomatrix(
             gray_q,
             distances=distances if distances else [1],
@@ -342,19 +292,16 @@ def extract_haralick_features_service(
             symmetric=True,
             normed=True,
         )
-
         if average_over_angles:
-            # Average across distances & angles -> one value per property
             feat_values = []
             for p in props:
                 val = greycoprops(glcm, p).mean()
                 feat_values.append(float(val))
             rows.append({"image_id": image_id, "vector": feat_values})
         else:
-            # Per (distance, angle). Flatten with labeled columns
             feat_map: Dict[str, float] = {}
             for p in props:
-                vals = greycoprops(glcm, p)  # shape: (len(distances), len(angles))
+                vals = greycoprops(glcm, p)
                 for di, d in enumerate(distances if distances else [1]):
                     for ai, a in enumerate(angles if angles else [0.0]):
                         key = f"{p}_d{d}_a{round(a, 6)}"
@@ -362,7 +309,6 @@ def extract_haralick_features_service(
             ordered_cols = sorted(feat_map.keys())
             rows.append({"image_id": image_id, "vector": [feat_map[k] for k in ordered_cols], "columns": ordered_cols})
 
-    # Build final table
     if average_over_angles:
         columns = ["image_id"] + props
         matrix = [[r["image_id"], *r["vector"]] for r in rows]
@@ -375,28 +321,23 @@ def extract_haralick_features_service(
 
 
 # --------------------------
-# NEW: LBP (Local Binary Patterns)
+# LBP
 # --------------------------
 def _lbp_bins_edges(method: str, P: int) -> np.ndarray:
-    """
-    Determine consistent histogram bin edges across images.
-    - 'uniform': skimage maps uniform patterns to [0..P] and non-uniform to P+1 => P+2 bins.
-    - other methods: fallback to [0..2^P - 1] inclusive.
-    Returns bin edges for numpy.histogram (len = n_bins + 1).
-    """
     if method == "uniform":
         n_bins = P + 2
-        return np.arange(-0.5, n_bins + 0.5, 1.0)  # centers at 0..P+1
+        return np.arange(-0.5, n_bins + 0.5, 1.0)
     else:
-        # default/ror/var — keep bins up to 2**P - 1
         max_label = (1 << P) - 1
-        return np.arange(-0.5, max_label + 1.5, 1.0)  # centers at 0..max_label
+        return np.arange(-0.5, max_label + 1.5, 1.0)
+
 
 def _normalize_hist(h: np.ndarray) -> np.ndarray:
     s = float(h.sum())
     if s <= 0:
         return h.astype(float)
     return (h / s).astype(float)
+
 
 def compute_lbp_service(
     image_indices: List[int],
@@ -406,12 +347,6 @@ def compute_lbp_service(
     method: str,
     normalize: bool,
 ) -> Dict[str, Any]:
-    """
-    Compute Local Binary Pattern histograms for one, multiple, or all images.
-    - If exactly one image, also return a PNG base64 of the LBP-coded image for visualization.
-    - If multiple, return a table {columns, rows}, each row = [image_id, hist...].
-    """
-    # Validate params
     if radius < 1:
         raise ValueError("radius must be >= 1")
     if num_neighbors < 4:
@@ -431,11 +366,9 @@ def compute_lbp_service(
     if not indices:
         raise ValueError("No valid images selected.")
 
-    # Precompute consistent bin edges across images
     bin_edges = _lbp_bins_edges(method, num_neighbors)
     n_bins = len(bin_edges) - 1
 
-    # Single-image mode: compute and return LBP image + histogram
     if len(indices) == 1:
         idx = indices[0]
         image_id = all_ids[idx]
@@ -445,18 +378,15 @@ def compute_lbp_service(
         gray = _to_grayscale_uint(arr)
 
         lbp = local_binary_pattern(gray, P=num_neighbors, R=radius, method=method)
-        # Histogram with fixed bins
         hist, _ = np.histogram(lbp.ravel(), bins=bin_edges)
         hist = _normalize_hist(hist) if normalize else hist.astype(float)
 
-        # LBP visualization (scale to 0..255)
         lbp_min, lbp_max = float(np.min(lbp)), float(np.max(lbp))
         if lbp_max > lbp_min:
             lbp_vis = ((lbp - lbp_min) / (lbp_max - lbp_min) * 255.0).astype(np.uint8)
         else:
             lbp_vis = np.zeros_like(lbp, dtype=np.uint8)
 
-        # Encode PNG base64
         lbp_img = Image.fromarray(lbp_vis)
         buf = io.BytesIO()
         lbp_img.save(buf, format="PNG")
@@ -465,12 +395,11 @@ def compute_lbp_service(
         return {
             "mode": "single",
             "image_id": image_id,
-            "bins": list(range(n_bins)),         # indices 0..n_bins-1
+            "bins": list(range(n_bins)),
             "histogram": hist.tolist(),
             "lbp_image_b64": lbp_b64,
         }
 
-    # Multi-image mode: build a table
     columns = ["image_id"] + [f"bin_{i}" for i in range(n_bins)]
     rows: List[List[Any]] = []
 
@@ -488,3 +417,70 @@ def compute_lbp_service(
         rows.append([image_id, *hist.tolist()])
 
     return {"mode": "multi", "columns": columns, "rows": rows}
+
+
+# --------------------------
+# NEW: Contour Extraction
+# --------------------------
+def extract_contours_service(
+    image_index: int,
+    mode: str,
+    method: str,
+    min_area: int = 10,
+    return_bounding_boxes: bool = True,
+    return_hierarchy: bool = False,
+) -> Dict[str, Any]:
+    mode_map = {
+        "RETR_EXTERNAL": cv2.RETR_EXTERNAL,
+        "RETR_LIST": cv2.RETR_LIST,
+        "RETR_TREE": cv2.RETR_TREE,
+        "RETR_CCOMP": cv2.RETR_CCOMP,
+    }
+    method_map = {
+        "CHAIN_APPROX_NONE": cv2.CHAIN_APPROX_NONE,
+        "CHAIN_APPROX_SIMPLE": cv2.CHAIN_APPROX_SIMPLE,
+    }
+    if mode not in mode_map or method not in method_map:
+        raise ValueError(f"Invalid contour mode/method: {mode}, {method}")
+
+    img_ids = get_all_image_ids()
+    if not img_ids:
+        raise ValueError("No images available.")
+    if image_index < 0 or image_index >= len(img_ids):
+        raise IndexError("image_index out of range")
+
+    img_bytes = load_image(img_ids[image_index])
+    arr = cv2.imdecode(np.frombuffer(img_bytes, np.uint8), cv2.IMREAD_GRAYSCALE)
+    if arr is None:
+        raise ValueError("Could not decode image.")
+
+    _, binary = cv2.threshold(arr, 127, 255, cv2.THRESH_BINARY)
+    contours, hierarchy = cv2.findContours(binary, mode_map[mode], method_map[method])
+
+    results = []
+    bounding_boxes = []
+    areas = []
+    for c in contours:
+        area = float(cv2.contourArea(c))
+        if area < min_area:
+            continue
+        pts = c.squeeze().tolist()
+        results.append(pts)
+        areas.append(area)
+        if return_bounding_boxes:
+            x, y, w, h = cv2.boundingRect(c)
+            bounding_boxes.append([int(x), int(y), int(w), int(h)])
+
+    overlay = cv2.cvtColor(arr, cv2.COLOR_GRAY2BGR)
+    cv2.drawContours(overlay, contours, -1, (0, 255, 0), 2)
+    buf = io.BytesIO()
+    Image.fromarray(overlay).save(buf, format="PNG")
+    viz_b64 = base64.b64encode(buf.getvalue()).decode("utf-8")
+
+    return {
+        "contours": results,
+        "bounding_boxes": bounding_boxes if return_bounding_boxes else None,
+        "areas": areas,
+        "hierarchy": hierarchy.tolist() if return_hierarchy and hierarchy is not None else None,
+        "visualization": viz_b64,
+    }

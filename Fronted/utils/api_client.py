@@ -9,18 +9,13 @@ from PIL import Image
 
 
 def _get_base_url():
-    """
-    Returns the base URL for the FastAPI backend.
-    Defaults to http://localhost:8000 unless overridden by
-    the SEHEN_LERNEN_API_URL environment variable.
-    """
     return os.getenv("SEHEN_LERNEN_API_URL", "http://localhost:8000")
 
 
+# -----------------------------
+# Upload & Metadata
+# -----------------------------
 def upload_images(image_files):
-    """
-    Upload image files to the backend and return a list of image IDs.
-    """
     url = f"{_get_base_url()}/upload/images"
     files = [("files", (f.name, f.getvalue(), f.type)) for f in image_files]
     resp = requests.post(url, files=files)
@@ -29,9 +24,6 @@ def upload_images(image_files):
 
 
 def upload_metadata_file(csv_file, delimiter, decimal_sep):
-    """
-    Upload metadata CSV/XLSX and retrieve column names.
-    """
     url = f"{_get_base_url()}/upload/metadata"
     files = {"file": (csv_file.name, csv_file.getvalue(), csv_file.type)}
     data = {"delimiter": delimiter, "decimal_sep": decimal_sep}
@@ -41,9 +33,6 @@ def upload_metadata_file(csv_file, delimiter, decimal_sep):
 
 
 def configure_metadata(image_id_col, col_mapping):
-    """
-    Send column mapping configuration to the backend.
-    """
     url = f"{_get_base_url()}/upload/metadata/configure"
     payload = {"image_id_col": image_id_col, "col_mapping": col_mapping}
     resp = requests.post(url, json=payload)
@@ -51,10 +40,10 @@ def configure_metadata(image_id_col, col_mapping):
     return resp.json()
 
 
+# -----------------------------
+# Sampling
+# -----------------------------
 def filter_sampling(filter_values):
-    """
-    Apply metadata filters and return sampled image IDs.
-    """
     url = f"{_get_base_url()}/sampling/filter"
     resp = requests.post(url, json={"filters": filter_values})
     resp.raise_for_status()
@@ -62,9 +51,6 @@ def filter_sampling(filter_values):
 
 
 def stratified_sampling(target_col, sample_size):
-    """
-    Perform stratified sampling by target column and return sampled image IDs.
-    """
     url = f"{_get_base_url()}/sampling/stratified"
     payload = {"target_col": target_col, "sample_size": sample_size}
     resp = requests.post(url, json=payload)
@@ -72,12 +58,10 @@ def stratified_sampling(target_col, sample_size):
     return resp.json().get("sampled_ids", [])
 
 
+# -----------------------------
+# Features
+# -----------------------------
 def generate_histogram(params):
-    """
-    Request histogram generation.
-    :param params: dict with keys 'hist_type', 'image_index', 'all_images'
-    :return: list of PNG bytes
-    """
     url = f"{_get_base_url()}/features/histogram"
     resp = requests.post(url, json=params)
     resp.raise_for_status()
@@ -86,15 +70,8 @@ def generate_histogram(params):
 
 
 def perform_kmeans(params):
-    """
-    Requests K-means clustering.
-    :param params: dict with keys 'n_clusters', 'random_state', 'selected_images', 'use_all_images'
-    :return: (plot_bytes, assignments)
-    """
     url = f"{_get_base_url()}/features/kmeans"
     resp = requests.post(url, json=params)
-
-    # Add more detailed error handling
     try:
         resp.raise_for_status()
         data = resp.json()
@@ -113,11 +90,6 @@ def perform_kmeans(params):
 
 
 def extract_shape_features(params):
-    """
-    Request shape feature extraction.
-    :param params: dict with keys 'method', 'image_index'
-    :return: dict {'features': list, 'visualization': bytes (optional)}
-    """
     url = f"{_get_base_url()}/features/shape"
     resp = requests.post(url, json=params)
     resp.raise_for_status()
@@ -129,11 +101,6 @@ def extract_shape_features(params):
 
 
 def extract_haralick_texture(params):
-    """
-    Request Haralick texture feature extraction and classification.
-    :param params: dict with keys 'train_images', 'train_labels', 'test_images'
-    :return: (labels, predictions)
-    """
     url = f"{_get_base_url()}/features/haralick"
     files = []
     for f in params.get("train_images", []):
@@ -149,11 +116,6 @@ def extract_haralick_texture(params):
 
 
 def extract_cooccurrence_texture(params):
-    """
-    Request co-occurrence texture feature extraction.
-    :param params: dict with key 'image_index'
-    :return: list of feature values
-    """
     url = f"{_get_base_url()}/features/cooccurrence"
     resp = requests.post(url, json=params)
     resp.raise_for_status()
@@ -164,20 +126,10 @@ def extract_cooccurrence_texture(params):
 # Replace image (cropping)
 # -----------------------------
 def replace_image(image_id: str, pil_image: Image.Image, format_hint: str = "PNG"):
-    """
-    Persistently replace an image on the backend with a cropped version.
-
-    :param image_id: The backend identifier of the image (filename returned from /upload/images).
-    :param pil_image: PIL Image to upload as the replacement.
-    :param format_hint: "PNG" or "JPEG" (defaults to PNG). JPEG will be converted with RGB mode.
-    :raises: requests.exceptions.RequestException on network/HTTP errors.
-    """
-    # Normalize mode for JPEG
     img_to_save = pil_image
     if format_hint.upper() in ("JPG", "JPEG") and pil_image.mode in ("RGBA", "P"):
         img_to_save = pil_image.convert("RGB")
 
-    # Serialize to bytes
     buf = BytesIO()
     img_to_save.save(buf, format=format_hint.upper())
     img_bytes = buf.getvalue()
@@ -190,7 +142,6 @@ def replace_image(image_id: str, pil_image: Image.Image, format_hint: str = "PNG
     try:
         resp.raise_for_status()
     except requests.exceptions.HTTPError:
-        # Surface server-provided error details if available
         try:
             detail = resp.json().get("detail") or resp.json().get("error")
         except Exception:
@@ -208,15 +159,9 @@ def replace_image(image_id: str, pil_image: Image.Image, format_hint: str = "PNG
 
 
 # -----------------------------
-# NEW: Extract images from CSV of URLs
+# Extract images from CSV
 # -----------------------------
 def extract_images_from_csv(csv_file):
-    """
-    Upload a CSV of image URLs, download them server-side, and get a ZIP back.
-
-    :param csv_file: Streamlit UploadedFile (st.file_uploader) for a .csv
-    :return: (zip_bytes: bytes, image_ids: list[str], errors: list[str])
-    """
     url = f"{_get_base_url()}/upload/extract-from-csv"
     files = {"file": (csv_file.name, csv_file.getvalue(), csv_file.type or "text/csv")}
     resp = requests.post(url, files=files)
@@ -237,26 +182,9 @@ def extract_images_from_csv(csv_file):
 
 
 # -----------------------------
-# NEW: Haralick table extraction
+# Haralick table extraction
 # -----------------------------
 def extract_haralick_features(params):
-    """
-    Call /features/haralick/extract for GLCM-based Haralick features.
-
-    Example params:
-    {
-      "image_indices": [0, 1],
-      "levels": 64,
-      "distances": [1, 2],
-      "angles": [0.0, 0.785398, 1.570796, 2.356194],
-      "resize_width": 256,
-      "resize_height": 256,
-      "average_over_angles": true,
-      "properties": ["contrast","dissimilarity","homogeneity","energy","correlation","ASM"]
-    }
-
-    Returns: {"columns": [...], "rows": [[...], ...]}
-    """
     url = f"{_get_base_url()}/features/haralick/extract"
     resp = requests.post(url, json=params)
     resp.raise_for_status()
@@ -264,56 +192,60 @@ def extract_haralick_features(params):
 
 
 # -----------------------------
-# NEW: LBP extraction (single/multi/all)
+# LBP extraction
 # -----------------------------
 def extract_lbp_features(params):
-    """
-    Call /features/lbp to compute Local Binary Pattern histograms.
-
-    Example params:
-    {
-      "image_indices": [0, 2],     # ignored if use_all_images is True
-      "use_all_images": false,
-      "radius": 2,
-      "num_neighbors": 16,
-      "method": "uniform",         # {"default","ror","uniform","var"}
-      "normalize": true
-    }
-
-    Returns one of:
-      - Single image mode:
-        {
-          "mode": "single",
-          "image_id": "foo.jpg",
-          "bins": 18,
-          "histogram": [...],
-          "lbp_image_b64": "..." (optional; present if backend returns it)
-        }
-        If "lbp_image_b64" is present, we attach "lbp_image_bytes" with decoded PNG bytes.
-
-      - Multi image/all mode:
-        {
-          "mode": "multi",
-          "columns": ["image_id", "bin_0", "bin_1", ...],
-          "rows": [
-             ["img1.jpg", h0, h1, ...],
-             ["img2.jpg", ...]
-          ]
-        }
-    """
     url = f"{_get_base_url()}/features/lbp"
     resp = requests.post(url, json=params)
     resp.raise_for_status()
     data = resp.json()
 
-    # If it's single mode and an image visualization is available, decode it
     if isinstance(data, dict) and data.get("mode") == "single":
         lbp_b64 = data.get("lbp_image_b64")
         if lbp_b64:
             try:
                 data["lbp_image_bytes"] = base64.b64decode(lbp_b64)
             except Exception:
-                # If decoding fails, don't crash the UI; just omit the bytes
                 data["lbp_image_bytes"] = None
+
+    return data
+
+
+# -----------------------------
+# NEW: Contour Extraction
+# -----------------------------
+def extract_contours(params):
+    """
+    Call /features/contours to compute contours from a binary/grayscale image.
+
+    Example params:
+    {
+      "image_index": 0,
+      "mode": "RETR_EXTERNAL",
+      "method": "CHAIN_APPROX_SIMPLE",
+      "min_area": 10,
+      "return_bounding_boxes": true,
+      "return_hierarchy": false
+    }
+
+    Returns:
+    {
+      "contours": [[(x,y), ...], ...],
+      "bounding_boxes": [[x,y,w,h], ...],
+      "areas": [...],
+      "hierarchy": [...],
+      "visualization": "..."  # base64-encoded PNG
+    }
+    """
+    url = f"{_get_base_url()}/features/contours"
+    resp = requests.post(url, json=params)
+    resp.raise_for_status()
+    data = resp.json()
+
+    if data.get("visualization"):
+        try:
+            data["visualization_bytes"] = base64.b64decode(data["visualization"])
+        except Exception:
+            data["visualization_bytes"] = None
 
     return data

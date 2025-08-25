@@ -1,0 +1,10 @@
+{
+  "python.defaultInterpreterPath": "/opt/homebrew/bin/python3.11",
+  "python.analysis.extraPaths": [
+    "${workspaceFolder}/Backend",
+    "${workspaceFolder}/Backend/app",
+    "${workspaceFolder}/Fronted"
+  ],
+  "python.languageServer": "Pylance",
+  "python.analysis.diagnosticMode": "workspace"
+}

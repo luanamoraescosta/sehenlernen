@@ -18,6 +18,7 @@ from utils.api_client import (
     replace_image,                 # persist cropped image to backend
     extract_haralick_features,     # table-style GLCM Haralick
     extract_lbp_features,          # NEW: LBP feature extraction
+    extract_contours,              # NEW: Contour extraction
 )
 
 
@@ -153,7 +154,8 @@ def render_feature_selection():
     # =========================
     # Normal Tabs (when not cropping)
     # =========================
-    tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs(
+    # ADD: New "Contour Extraction" tab at the end
+    tab1, tab2, tab3, tab4, tab5, tab6, tab7 = st.tabs(
         [
             "Histogram Analysis",
             "k-means Clustering",
@@ -161,6 +163,7 @@ def render_feature_selection():
             "Haralick Texture",
             "Co-Occurrence Texture",
             "Local Binary Patterns (LBP)",  # NEW
+            "Contour Extraction",            # NEW
         ]
     )
 
@@ -205,9 +208,38 @@ def render_feature_selection():
             for i, img_bytes in enumerate(st.session_state["histogram_images"]):
                 with cols[i % 4]:
                     st.image(img_bytes, caption=f"Histogram {i+1}", width=200)
+                    # Enlarge button (existing)
                     if st.button(f"Enlarge {i+1}", key=f"enlarge_hist_{i}"):
                         st.session_state["fullscreen_image"] = img_bytes
                         st.session_state["fullscreen_section"] = "histogram"
+                    # NEW: Contours button next to Enlarge
+                    if st.button(f"Contours {i+1}", key=f"contours_hist_{i}"):
+                        with st.spinner("Extracting contours..."):
+                            try:
+                                # Map histogram index back to image index
+                                # If 'all images' was used, i maps directly.
+                                # Otherwise, use the selected index.
+                                img_idx = i if st.session_state.get("hist_all") else st.session_state.get("hist_image_idx", 0)
+                                params = {
+                                    "image_index": int(img_idx),
+                                    "mode": "RETR_EXTERNAL",
+                                    "method": "CHAIN_APPROX_SIMPLE",
+                                    "min_area": 10,
+                                    "return_bounding_boxes": True,
+                                    "return_hierarchy": False,
+                                }
+                                result = extract_contours(params)
+                                if result.get("visualization_bytes"):
+                                    st.image(result["visualization_bytes"], caption="Contours Overlay", width=200)
+                                # Show quick stats
+                                areas = result.get("areas", [])
+                                bbs = result.get("bounding_boxes", [])
+                                if areas:
+                                    st.write(f"Contours: {len(areas)}")
+                                if bbs:
+                                    st.write("Sample bounding box:", bbs[0])
+                            except Exception as e:
+                                st.error(f"Contour extraction failed: {e}")
 
             if st.button("Download All Histograms", key="download_all_histograms"):
                 zip_data = create_histogram_zip(st.session_state["histogram_images"])
@@ -518,6 +550,77 @@ def render_feature_selection():
                             st.warning("Unexpected LBP response format.")
                     except Exception as e:
                         st.error(f"LBP computation failed: {e}")
+
+    # --- NEW: Contour Extraction (dedicated tab) ---
+    with tab7:
+        st.subheader("Contour Extraction")
+        st.caption(
+            "Extract contours (closed shapes or outlines) from a binary or grayscale version of your image using "
+            "OpenCV’s `findContours`. This is useful for shape analysis, counting objects, generating bounding boxes, "
+            "and creating polygonal outlines."
+        )
+        st.markdown(
+            "**How it works:** The image is converted to grayscale and thresholded to binary. "
+            "Contours are then detected and (optionally) simplified using the selected approximation method."
+        )
+
+        selected_idx = st.selectbox(
+            "Select Image",
+            options=list(range(len(images))),
+            format_func=lambda x: f"Image {x+1}",
+            key="contour_img_idx",
+        )
+        mode = st.selectbox(
+            "Contour Retrieval Mode",
+            ["RETR_EXTERNAL", "RETR_LIST", "RETR_TREE", "RETR_CCOMP"],
+            index=0,
+            key="contour_mode",
+        )
+        method = st.selectbox(
+            "Contour Approximation Method",
+            ["CHAIN_APPROX_SIMPLE", "CHAIN_APPROX_NONE"],
+            index=0,
+            key="contour_method",
+        )
+        min_area = st.number_input("Minimum contour area (filter small noise)", min_value=0, value=10, key="contour_min_area")
+        return_bb = st.checkbox("Return bounding boxes", value=True, key="contour_return_bb")
+        return_hier = st.checkbox("Return hierarchy (OpenCV format)", value=False, key="contour_return_hier")
+
+        if st.button("Run Contour Extraction", key="btn_contour_extract"):
+            with st.spinner("Extracting contours..."):
+                try:
+                    params = {
+                        "image_index": int(selected_idx),
+                        "mode": mode,
+                        "method": method,
+                        "min_area": int(min_area),
+                        "return_bounding_boxes": bool(return_bb),
+                        "return_hierarchy": bool(return_hier),
+                    }
+                    result = extract_contours(params)
+
+                    # Preview overlay
+                    if result.get("visualization_bytes"):
+                        st.image(
+                            result["visualization_bytes"],
+                            caption="Contours overlay",
+                            use_column_width=False,
+                            width=400,
+                        )
+
+                    # Details
+                    areas = result.get("areas", [])
+                    bbs = result.get("bounding_boxes", [])
+                    st.write(f"Detected contours: **{len(areas)}**")
+                    if bbs:
+                        st.write("Bounding boxes (x, y, w, h):")
+                        st.write(bbs[: min(10, len(bbs))])  # show first few
+
+                    if return_hier:
+                        st.write("Hierarchy (OpenCV):")
+                        st.write(result.get("hierarchy"))
+                except Exception as e:
+                    st.error(f"Contour extraction failed: {e}")
 
     # --- Fullscreen Image Modal (histograms)
     if st.session_state.get("fullscreen_image"):
