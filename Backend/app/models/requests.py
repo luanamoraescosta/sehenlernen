@@ -64,6 +64,40 @@ class ShapeRequest(BaseModel):
         default=None, description="Return HOG visualization image (default: True)"
     )
 
+class FeatureBaseRequest(BaseModel):
+    """
+    Common fields for any feature‑extraction endpoint that works by image index.
+    """
+    image_index: Optional[int] = Field(
+        None,
+        description=(
+            "Zero‑based index of the image inside the dataset. Ignored if "
+            "`all_images=True`."
+        ),
+    )
+    all_images: bool = Field(
+        False,
+        description="If True, run the extraction on **all** uploaded images.",
+    )
+    image_indices: Optional[List[int]] = Field(
+        None,
+        description=(
+            "Explicit list of indices. If supplied it overrides `image_index` "
+            "and `all_images`."
+        ),
+    )
+
+
+class SiftResponse(BaseModel):
+    """Returned by the /sift endpoint."""
+    features: List[List[float]]               # each SIFT descriptor = 128 floats
+    visualization: Optional[str] = None       # base64‑encoded PNG with key‑points
+
+
+class EdgeResponse(BaseModel):
+    """Returned by the /edges endpoint."""
+    edge_image: str                           # base64 PNG of the edge map
+    edges_matrix: Optional[List[List[float]]] = None   # optional gradient matrix
 
 class StatsRequest(BaseModel):
     data: Dict[str, Any]

@@ -3,11 +3,12 @@ import io
 import csv
 import zipfile
 import math
-
+import base64
 import numpy as np
 import streamlit as st
 from PIL import Image
 from streamlit_cropper import st_cropper  # interactive cropper
+import time
 
 from utils.api_client import (
     generate_histogram,
@@ -20,8 +21,9 @@ from utils.api_client import (
     extract_lbp_features,          # NEW: LBP feature extraction
     extract_contours,              # NEW: Contour extraction
     extract_hog_features,          # NEW: HOG convenience call
+    extract_sift_features,
+    extract_edge_features,
 )
-
 
 # ---------- Helpers ----------
 def _get_image_id_for_index(idx: int) -> str | None:
@@ -51,6 +53,9 @@ def _to_csv_bytes(columns, rows):
         writer.writerow(r)
     return buf.getvalue().encode("utf-8")
 
+def base64_to_bytes(b64_str: str) -> bytes:
+    """Convert a base64‑encoded PNG string to raw bytes that Streamlit can display."""
+    return base64.b64decode(b64_str)
 
 # ---------- Main Entry ----------
 def render_feature_selection():
@@ -156,7 +161,7 @@ def render_feature_selection():
     # Normal Tabs (when not cropping)
     # =========================
     # ADD: New "Contour Extraction" tab at the end
-    tab1, tab2, tab3, tab4, tab5, tab6, tab7 = st.tabs(
+    tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8 = st.tabs(
         [
             "Histogram Analysis",
             "k-means Clustering",
@@ -165,6 +170,7 @@ def render_feature_selection():
             "Co-Occurrence Texture",
             "Local Binary Patterns (LBP)",  # NEW
             "Contour Extraction",            # NEW
+            "SIFT & Edge Detection",
         ]
     )
 
@@ -682,18 +688,204 @@ def render_feature_selection():
                 except Exception as e:
                     st.error(f"Contour extraction failed: {e}")
 
-    # --- Fullscreen Image Modal (histograms)
-    if st.session_state.get("fullscreen_image"):
-        st.image(st.session_state["fullscreen_image"], caption="Fullscreen Image", use_column_width=True)
-        if st.button("Close", key="close_fullscreen"):
-            st.session_state["fullscreen_image"] = None
-            st.session_state["fullscreen_section"] = None
+    # ----------------------------------------------------------------------
+#   Tab 8 – SIFT & Edge Detection
+# ----------------------------------------------------------------------
+    with tab8:
+        st.subheader("SIFT & Edge Detection")
+        st.caption(
+            """
+            *SIFT* extracts scale‑invariant key‑points and 128‑dimensional descriptors.  
+            *Edge detection* (Canny or Sobel) highlights gradients in the image.  
+            Choose a single image, a custom list, or run on **all** uploaded images.
+            """
+        )
 
-    # --- Navigation ---
-    col1, col2 = st.columns([2, 1])
-    with col2:
-        if st.button("Next: Statistical Analysis", key="next_stats"):
-            st.session_state["active_section"] = "Statistics Analysis"
+        # ---------- Image selection ----------
+        col_sel, col_opt = st.columns([2, 1])
+
+        with col_sel:
+            # 1️⃣  Single‑image selector (default)
+            single_idx = st.selectbox(
+                "Select Image (single)",
+                options=list(range(len(images))),
+                format_func=lambda x: f"Image {x+1}",
+                key="sift_single_idx",
+            )
+
+            # 2️⃣  Multi‑select (optional)
+            multi_idxs = st.multiselect(
+                "Or select several images",
+                options=list(range(len(images))),
+                format_func=lambda x: f"Image {x+1}",
+                key="sift_multi_idxs",
+            )
+
+            # 3️⃣  “All images” toggle
+            use_all = st.checkbox("Run on **all** images", value=False, key="sift_use_all")
+
+        # ---------- Edge‑detection parameters ----------
+        with col_opt:
+            edge_method = st.radio(
+                "Edge‑Detection Method",
+                options=["canny", "sobel"],
+                index=0,
+                key="edge_method",
+            )
+            if edge_method == "canny":
+                low_thr = st.number_input(
+                    "Low threshold", min_value=0, max_value=255, value=100, key="canny_low"
+                )
+                high_thr = st.number_input(
+                    "High threshold", min_value=0, max_value=255, value=200, key="canny_high"
+                )
+            else:  # sobel
+                sobel_ks = st.selectbox(
+                    "Sobel kernel size",
+                    options=[1, 3, 5, 7],
+                    index=1,
+                    key="sobel_ksize",
+                )
+
+        # ---------- Helper to build the payload ----------
+        def _build_payload() -> dict:
+            """
+            Returns a dict that matches the Pydantic model `FeatureBaseRequest`.
+            Priority (top → bottom):
+                1. use_all → {"all_images": True}
+                2. multi_idxs → {"image_indices": [...]}
+                3. single_idx → {"image_index": …}
+            """
+            if use_all:
+                return {"all_images": True}
+            if multi_idxs:
+                return {"image_indices": list(multi_idxs)}
+            return {"image_index": int(single_idx)}
+
+        # ---------- Buttons ----------
+        col_btn1, col_btn2 = st.columns(2)
+
+        # ---- SIFT ----
+        with col_btn1:
+            if st.button("Run SIFT", key="btn_sift"):
+                payload = _build_payload()
+                with st.spinner("Extracting SIFT key‑points…"):
+                    try:
+                        result = extract_sift_features(payload)
+
+                        # ---- Visualisation (may be None for multi‑image requests) ----
+                        viz = result.get("visualization")
+                        if viz:
+                            st.image(
+                                viz,
+                                caption="SIFT key‑points (visualisation)",
+                                use_container_width=True,   # <-- NEW flag (no deprecation warning)
+                            )
+                        else:
+                            st.info("No visualisation returned (you asked for several images).")
+
+                        # ---- Numeric descriptors (CSV download) ----
+                        feats = result.get("features", [])
+                        if feats:
+                            st.success(f"Extracted **{len(feats)}** SIFT descriptors.")
+                            cols = [f"d{i}" for i in range(128)]
+                            csv_bytes = _to_csv_bytes(cols, feats)
+                            st.download_button(
+                                label="Download SIFT descriptors (CSV)",
+                                data=csv_bytes,
+                                file_name="sift_descriptors.csv",
+                                mime="text/csv",
+                                key="dl_sift_csv",
+                            )
+                        else:
+                            st.warning("No SIFT descriptors were found.")
+                    except Exception as e:
+                        st.error(f"SIFT extraction failed: {e}")
+
+        # ---- Edge detection ----
+        with col_btn2:
+            if st.button("Run Edge Detection", key="btn_edge"):
+                payload = _build_payload()
+                with st.spinner("Running edge detection…"):
+                    try:
+                        result = extract_edge_features(
+                            payload,
+                            method=edge_method,
+                            low_thresh=low_thr if edge_method == "canny" else None,
+                            high_thresh=high_thr if edge_method == "canny" else None,
+                            sobel_ksize=sobel_ks if edge_method == "sobel" else None,
+                        )
+
+                        # ---- Show the FIRST edge map ----
+                        edge_imgs = result.get("edge_images", [])
+                        if edge_imgs:
+                            st.image(
+                                edge_imgs[0],
+                                caption=f"{edge_method.title()} edge map",
+                                use_container_width=True,
+                            )
+                        else:
+                            st.warning("Backend returned no edge images.")
+
+                        # ---- Generate CSV for ALL processed images ----
+                        all_matrices = result.get("edges_matrices", [])
+                        num_images = len(all_matrices)
+                        
+                        if num_images > 0:
+                            try:
+                                st.success(f"Processed {num_images} image{'s' if num_images > 1 else ''}.")
+                                
+                                # Prepare CSV data
+                                csv_rows = []
+                                col_names = ["image_id", "row", "col", "value"]
+                                
+                                for img_idx, matrix in enumerate(all_matrices):
+                                    img_id = f"img_{img_idx}"
+                                    for row_idx, row in enumerate(matrix):
+                                        for col_idx, value in enumerate(row):
+                                            csv_rows.append([
+                                                img_id,
+                                                row_idx,
+                                                col_idx,
+                                                float(value)
+                                            ])
+                                
+                                # Generate CSV
+                                csv_bytes = _to_csv_bytes(col_names, csv_rows)
+                                
+                                # Download button
+                                st.download_button(
+                                    label=f"Download edge matrices for {num_images} image{'s' if num_images > 1 else ''} (CSV)",
+                                    data=csv_bytes,
+                                    file_name=f"edge_matrices_{num_images}_images.csv",
+                                    mime="text/csv",
+                                    key=f"dl_edge_matrices_{int(time.time())}",
+                                )
+                                
+                                # Optional: Show matrix statistics
+                                if num_images == 1:
+                                    matrix = all_matrices[0]
+                                    st.write(f"Matrix shape: {len(matrix)} × {len(matrix[0])}")
+                                else:
+                                    st.write(f"Total data points: {len(csv_rows)}")
+                                    
+                            except Exception as e:
+                                st.error(f"CSV generation failed: {str(e)}")
+                                st.write("Debug info:")
+                                st.write(f"Number of images: {num_images}")
+                                if num_images > 0:
+                                    st.write(f"First matrix shape: {len(all_matrices[0])} × {len(all_matrices[0][0])}")
+                        else:
+                            st.info("No gradient matrices were generated.")
+                            
+                    except Exception as e:
+                        st.error(f"Edge detection failed: {e}")
+
+        # --- Navigation ---
+        col1, col2 = st.columns([2, 1])
+        with col2:
+            if st.button("Next: Statistical Analysis", key="next_stats"):
+                st.session_state["active_section"] = "Statistics Analysis"
 
 
 # ---------- Utility ----------

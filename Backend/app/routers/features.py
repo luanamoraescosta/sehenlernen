@@ -5,6 +5,7 @@ from fastapi import APIRouter, HTTPException, UploadFile, File
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 from typing import List, Dict, Any
+import base64
 
 from app.services.feature_service import (
     generate_histogram_service,
@@ -15,6 +16,8 @@ from app.services.feature_service import (
     extract_haralick_features_service,  # table-style Haralick extraction
     compute_lbp_service,                # LBP service
     extract_contours_service,           # Contour extraction
+    extract_sift_service,
+    extract_edges_service,
 )
 
 from app.models.requests import (
@@ -22,7 +25,10 @@ from app.models.requests import (
     LBPRequest,
     ContourRequest,                     # contour request model
     ShapeRequest,                       # NEW: import enhanced ShapeRequest (with HOG params)
-)
+    FeatureBaseRequest,
+    SiftResponse,
+    EdgeResponse,
+)   
 
 router = APIRouter()
 
@@ -213,3 +219,72 @@ def contour_extract(req: ContourRequest):
     except Exception as e:
         logging.exception("Failed to extract contours")
         raise HTTPException(status_code=400, detail=str(e))
+
+# ----------------------------------------------------------------------
+# SIFT endpoint
+# ----------------------------------------------------------------------
+@router.post("/sift")
+def sift(request: FeatureBaseRequest):
+    """
+    Returns:
+        {
+            "features": [[float, ...], ...],
+            "visualization": base64_str | null  # single image only
+        }
+    """
+    try:
+        feats, viz_bytes = extract_sift_service(
+            image_index=request.image_index,
+            all_images=request.all_images,
+            image_indices=request.image_indices,
+        )
+        # Only return visualization for SINGLE-IMAGE requests
+        viz_b64 = base64.b64encode(viz_bytes).decode() if viz_bytes else None
+        return {
+            "features": feats,
+            "visualization": viz_b64,
+        }
+    except Exception as e:
+        logging.exception("SIFT extraction failed")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ----------------------------------------------------------------------
+# Edge‑detection endpoint (Canny by default)
+# ----------------------------------------------------------------------
+@router.post("/edges")
+def edges(
+    request: FeatureBaseRequest,
+    method: str = "canny",
+    low_thresh: int = 100,
+    high_thresh: int = 200,
+    sobel_ksize: int = 3,
+):
+    """
+    Returns:
+        {
+            "edge_images": [base64_str, ...],  # one per processed image
+            "edges_matrices": [                # ALL gradient matrices
+                [[float, ...], ...],  # matrix for image 0
+                [[float, ...], ...],  # matrix for image 1
+                ...
+            ]
+        }
+    """
+    try:
+        edge_imgs_b64, all_matrices = extract_edges_service(
+            image_index=request.image_index,
+            all_images=request.all_images,
+            image_indices=request.image_indices,
+            method=method,
+            low_thresh=low_thresh,
+            high_thresh=high_thresh,
+            sobel_ksize=sobel_ksize,
+        )
+        return {
+            "edge_images": edge_imgs_b64,
+            "edges_matrices": all_matrices,  # Returns ALL matrices
+        }
+    except Exception as e:
+        logging.exception("Edge detection failed")
+        raise HTTPException(status_code=500, detail=str(e))

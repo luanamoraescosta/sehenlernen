@@ -292,3 +292,90 @@ def extract_hog_features(
         result["visualization"] = None
 
     return result
+
+
+# ----------------------------------------------------------------------
+# NEW: SIFT extraction
+# ----------------------------------------------------------------------
+def extract_sift_features(params):
+    """
+    Call the backend endpoint ``POST /features/sift``.
+    
+    ``params`` must follow the ``FeatureBaseRequest`` model that the backend
+    expects – i.e. one (or more) of the following keys:
+
+        * ``image_index`` (int) – index of a single image
+        * ``image_indices`` (list[int]) – explicit list of indices
+        * ``all_images`` (bool) – process every uploaded image
+
+    The backend returns a JSON payload:
+
+        {
+            "features": [[float, …], …],          # list of SIFT descriptors
+            "visualization": "iVBORw0KGgo…"      # base‑64 PNG (may be None)
+        }
+
+    This helper decodes the optional visualisation and returns a dict:
+
+        {
+            "features": [...],
+            "visualization": bytes | None
+        }
+    """
+    url = f"{_get_base_url()}/features/sift"
+    resp = requests.post(url, json=params)
+    resp.raise_for_status()
+    data = resp.json()
+
+    result = {"features": data.get("features", [])}
+    # ``visualization`` is optional – decode only when present
+    if data.get("visualization"):
+        try:
+            result["visualization"] = base64.b64decode(data["visualization"])
+        except Exception:
+            # If the backend sent a malformed string we do not want the UI to crash
+            result["visualization"] = None
+    else:
+        result["visualization"] = None
+
+    return result
+
+
+# ----------------------------------------------------------------------
+# NEW: Edge‑detection extraction (Canny / Sobel)
+# ----------------------------------------------------------------------
+def extract_edge_features(
+    params,
+    method: str = "canny",
+    low_thresh: int = 100,
+    high_thresh: int = 200,
+    sobel_ksize: int = 3,
+):
+    url = f"{_get_base_url()}/features/edges"
+    query_params = {
+        "method": method,
+        "low_thresh": low_thresh,
+        "high_thresh": high_thresh,
+        "sobel_ksize": sobel_ksize,
+    }
+    resp = requests.post(url, json=params, params=query_params)
+    resp.raise_for_status()
+    data = resp.json()
+
+    result = {}
+    
+    # Handle the LIST of edge images
+    edge_images = data.get("edge_images", [])
+    if edge_images:
+        result["edge_images"] = [base64.b64decode(img_b64) for img_b64 in edge_images]
+    else:
+        result["edge_images"] = []
+    
+    # Handle ALL gradient matrices (plural!)
+    all_matrices = data.get("edges_matrices", [])
+    if all_matrices:
+        result["edges_matrices"] = all_matrices  # Already in correct format
+    else:
+        result["edges_matrices"] = []
+    
+    return result

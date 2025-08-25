@@ -10,7 +10,7 @@ from skimage.transform import resize as sk_resize
 import cv2
 import pandas as pd
 from typing import Any, Optional, List, Dict, Tuple
-from fastapi import UploadFile
+from fastapi import UploadFile, HTTPException
 from io import BytesIO
 
 from app.services.data_service import load_image, get_all_image_ids, metadata_df, image_id_col
@@ -237,12 +237,14 @@ def extract_shape_service(
 
     elif method == "SIFT":
         img_gray = img.convert('L')
+        # sk_resize returns a float image in [0,1]; convert to uint8 for OpenCV
         arr = (sk_resize(img_gray, (256, 256)) * 255).astype('uint8')
         sift = cv2.SIFT_create()
         kp, des = sift.detectAndCompute(arr, None)
         features = des.tolist() if des is not None else []
         img_kp = cv2.drawKeypoints(arr, kp, None, color=(0, 255, 0))
-        pil_kp = Image.fromarray(img_kp)
+        # <<< FIXED LINE >>>
+        pil_kp = Image.fromarray(cv2.cvtColor(img_kp, cv2.COLOR_BGR2RGB))
         buf = io.BytesIO()
         pil_kp.save(buf, format='PNG')
         viz_b64 = base64.b64encode(buf.getvalue()).decode()
@@ -261,7 +263,158 @@ def extract_shape_service(
 
     return features, viz_b64
 
+# ----------------------------------------------------------------------
+# SIFT extraction
+# ----------------------------------------------------------------------
 
+def _get_sift_detector():
+    """
+    Return a callable that creates a SIFT detector.
+    Tries the three common ways OpenCV exposes SIFT.
+    Raises a RuntimeError with a clear message if none are available.
+    """
+    # 1️⃣ New OpenCV ≥4.4 (SIFT moved to the main module)
+    if hasattr(cv2, "SIFT_create"):
+        return cv2.SIFT_create
+
+    # 2️⃣ OpenCV‑contrib (xfeatures2d) – older builds
+    if hasattr(cv2, "xfeatures2d") and hasattr(cv2.xfeatures2d, "SIFT_create"):
+        return cv2.xfeatures2d.SIFT_create
+
+    # 3️⃣ Fallback to ORB (free) – optional, you can just raise
+    raise RuntimeError(
+        "SIFT is not available in the installed OpenCV package. "
+        "Install `opencv-contrib-python` (or a build that includes SIFT) "
+        "or use the ORB fallback."
+    )
+def extract_sift_service(
+    image_index: Optional[int] = None,
+    all_images: bool = False,
+    image_indices: Optional[List[int]] = None,
+    resize: Optional[int] = 256,          # size to which the image is resized before detection
+) -> Tuple[List[List[float]], Optional[bytes]]:
+    """
+    Run OpenCV SIFT on one or more images.
+    Returns (features, visualisation_png_bytes_or_None).
+    """
+    # ---------- decide which images to process ----------
+    ids = get_all_image_ids()
+    if all_images:
+        indices = list(range(len(ids)))
+    elif image_indices is not None:
+        indices = [i for i in image_indices if 0 <= i < len(ids)]
+    elif image_index is not None:
+        if not (0 <= image_index < len(ids)):
+            raise IndexError("image_index out of range")
+        indices = [image_index]
+    else:
+        raise ValueError("Provide image_index, image_indices or all_images=True")
+
+    # ---------- get a SIFT detector (will raise a clear error if missing) ----------
+    try:
+        sift_ctor = _get_sift_detector()          # helper defined earlier in the file
+    except RuntimeError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+    sift = sift_ctor()
+
+    all_features: List[List[float]] = []
+    viz_png: Optional[bytes] = None
+
+    for idx in indices:
+        img_bytes = load_image(ids[idx])
+        # Decode to grayscale (SIFT works on a single channel)
+        img = cv2.imdecode(np.frombuffer(img_bytes, np.uint8), cv2.IMREAD_GRAYSCALE)
+        if img is None:
+            continue
+
+        if resize:
+            img = cv2.resize(img, (resize, resize))
+
+        kp, des = sift.detectAndCompute(img, None)
+        if des is not None:
+            all_features.extend(des.tolist())
+
+        # Visualisation only when a *single* image is requested
+        if len(indices) == 1:
+            # Draw key‑points on the image (still BGR)
+            img_kp = cv2.drawKeypoints(
+                img,
+                kp,
+                None,
+                flags=cv2.DRAW_MATCHES_FLAGS_DRAW_RICH_KEYPOINTS,
+                color=(0, 255, 0),
+            )
+            # Convert BGR → RGB so Pillow shows the correct colours
+            pil_kp = Image.fromarray(cv2.cvtColor(img_kp, cv2.COLOR_BGR2RGB))
+            buf = io.BytesIO()
+            pil_kp.save(buf, format="PNG")
+            viz_png = buf.getvalue()
+
+    return all_features, viz_png
+
+
+# ----------------------------------------------------------------------
+# Edge detection (Canny or Sobel)
+# ----------------------------------------------------------------------
+def extract_edges_service(
+    image_index: Optional[int] = None,
+    all_images: bool = False,
+    image_indices: Optional[List[int]] = None,
+    method: str = "canny",
+    low_thresh: int = 100,
+    high_thresh: int = 200,
+    sobel_ksize: int = 3,
+) -> Tuple[List[str], List[List[List[float]]]]:
+    """
+    Apply edge detection (Canny or Sobel) on one or more images.
+
+    Returns
+    -------
+    edge_images_b64 : list[str]   # base64 PNG for each processed image
+    all_matrices    : list[list[list[float]]]  # ALL gradient matrices (one per image)
+    """
+    ids = get_all_image_ids()
+    if all_images:
+        indices = list(range(len(ids)))
+    elif image_indices is not None:
+        indices = [i for i in image_indices if 0 <= i < len(ids)]
+    elif image_index is not None:
+        if not (0 <= image_index < len(ids)):
+            raise IndexError("image_index out of range")
+        indices = [image_index]
+    else:
+        raise ValueError("Provide image_index, image_indices or all_images=True")
+
+    edge_imgs_b64: List[str] = []
+    all_matrices: List[List[List[float]]] = []  # Will collect ALL matrices
+
+    for idx in indices:
+        img_bytes = load_image(ids[idx])
+        img = cv2.imdecode(np.frombuffer(img_bytes, np.uint8), cv2.IMREAD_GRAYSCALE)
+        if img is None:
+            continue
+
+        if method.lower() == "canny":
+            edges = cv2.Canny(img, low_thresh, high_thresh)
+        elif method.lower() == "sobel":
+            grad_x = cv2.Sobel(img, cv2.CV_64F, 1, 0, ksize=sobel_ksize)
+            grad_y = cv2.Sobel(img, cv2.CV_64F, 0, 1, ksize=sobel_ksize)
+            magnitude = cv2.magnitude(grad_x, grad_y)
+            edges = np.uint8(np.clip(magnitude, 0, 255))
+        else:
+            raise ValueError("method must be 'canny' or 'sobel'")
+
+        # Encode PNG for the UI
+        pil = Image.fromarray(edges)
+        buf = io.BytesIO()
+        pil.save(buf, format="PNG")
+        edge_imgs_b64.append(base64.b64encode(buf.getvalue()).decode())
+
+        # Collect ALL matrices (not just the first one)
+        all_matrices.append(edges.astype(float).tolist())
+
+    return edge_imgs_b64, all_matrices
 # --------------------------
 # Legacy Haralick
 # --------------------------
