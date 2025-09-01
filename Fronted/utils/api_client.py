@@ -91,8 +91,26 @@ def perform_kmeans(params):
 
 def extract_shape_features(params):
     """
-    Generic shape feature call (HOG/SIFT/FAST) — pass:
-      {"method": "HOG"|"SIFT"|"FAST", "image_index": int, ...optional HOG params...}
+    Generic shape/feature call (HOG/SIFT/FAST).
+
+    Pass a dict like:
+      {
+        "method": "HOG" | "SIFT" | "FAST",
+        "image_index": int,
+
+        # Optional (HOG only):
+        "orientations": int,
+        "pixels_per_cell": [h, w],
+        "cells_per_block": [y, x],
+        "resize_width": int,
+        "resize_height": int,
+        "visualize": bool,
+
+        # Optional (FAST only; used by backend if provided):
+        "fast_threshold": int,
+        "fast_nonmax": bool,
+        "fast_type": "TYPE_9_16" | "TYPE_7_12" | "TYPE_5_8"
+      }
     """
     url = f"{_get_base_url()}/features/shape"
     resp = requests.post(url, json=params)
@@ -216,7 +234,7 @@ def extract_lbp_features(params):
 
 
 # -----------------------------
-# NEW: Contour Extraction
+# Contour Extraction
 # -----------------------------
 def extract_contours(params):
     """
@@ -247,7 +265,7 @@ def extract_contours(params):
 
 
 # -----------------------------
-# NEW: HOG convenience wrapper
+# HOG convenience wrapper
 # -----------------------------
 def extract_hog_features(
     image_index,
@@ -295,7 +313,7 @@ def extract_hog_features(
 
 
 # ----------------------------------------------------------------------
-# NEW: SIFT extraction
+# SIFT extraction
 # ----------------------------------------------------------------------
 def extract_sift_features(params):
     """
@@ -308,15 +326,13 @@ def extract_sift_features(params):
         * ``image_indices`` (list[int]) – explicit list of indices
         * ``all_images`` (bool) – process every uploaded image
 
-    The backend returns a JSON payload:
-
+    Backend returns:
         {
             "features": [[float, …], …],          # list of SIFT descriptors
-            "visualization": "iVBORw0KGgo…"      # base‑64 PNG (may be None)
+            "visualization": "iVBORw0KGgo…"      # base-64 PNG (may be None)
         }
 
-    This helper decodes the optional visualisation and returns a dict:
-
+    Returns:
         {
             "features": [...],
             "visualization": bytes | None
@@ -328,12 +344,10 @@ def extract_sift_features(params):
     data = resp.json()
 
     result = {"features": data.get("features", [])}
-    # ``visualization`` is optional – decode only when present
     if data.get("visualization"):
         try:
             result["visualization"] = base64.b64decode(data["visualization"])
         except Exception:
-            # If the backend sent a malformed string we do not want the UI to crash
             result["visualization"] = None
     else:
         result["visualization"] = None
@@ -342,7 +356,7 @@ def extract_sift_features(params):
 
 
 # ----------------------------------------------------------------------
-# NEW: Edge‑detection extraction (Canny / Sobel)
+# Edge-detection extraction (Canny / Sobel)
 # ----------------------------------------------------------------------
 def extract_edge_features(
     params,
@@ -374,8 +388,51 @@ def extract_edge_features(
     # Handle ALL gradient matrices (plural!)
     all_matrices = data.get("edges_matrices", [])
     if all_matrices:
-        result["edges_matrices"] = all_matrices  # Already in correct format
+        result["edges_matrices"] = all_matrices
     else:
         result["edges_matrices"] = []
     
+    return result
+
+
+# ----------------------------------------------------------------------
+# FAST convenience wrapper
+# ----------------------------------------------------------------------
+def extract_fast_features(
+    image_index: int,
+    threshold: int | None = None,
+    nonmax: bool | None = None,
+    fast_type: str | None = None,  # "TYPE_9_16" | "TYPE_7_12" | "TYPE_5_8"
+):
+    """
+    Convenience wrapper for FAST using /features/shape with method="FAST".
+    Optional params are forwarded if provided; otherwise backend defaults apply.
+    Returns: {"features": [...], "visualization": bytes|None}
+    """
+    url = f"{_get_base_url()}/features/shape"
+    payload = {
+        "method": "FAST",
+        "image_index": int(image_index),
+    }
+    # Use names that match the backend ShapeRequest
+    if threshold is not None:
+        payload["fast_threshold"] = int(threshold)
+    if nonmax is not None:
+        payload["fast_nonmax"] = bool(nonmax)
+    if fast_type is not None:
+        payload["fast_type"] = str(fast_type)
+
+    resp = requests.post(url, json=payload)
+    resp.raise_for_status()
+    data = resp.json()
+
+    result = {"features": data.get("features", [])}
+    if data.get("visualization"):
+        try:
+            result["visualization"] = base64.b64decode(data["visualization"])
+        except Exception:
+            result["visualization"] = None
+    else:
+        result["visualization"] = None
+
     return result

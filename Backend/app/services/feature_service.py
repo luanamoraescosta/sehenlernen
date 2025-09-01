@@ -1,6 +1,8 @@
 import io
 import base64
 import numpy as np
+import matplotlib
+matplotlib.use("Agg")  # <- non-GUI backend to avoid macOS NSWindow crash
 import matplotlib.pyplot as plt
 from PIL import Image
 from sklearn.preprocessing import StandardScaler
@@ -158,12 +160,17 @@ def _as_tuple2(x: Optional[List[int]], default: Tuple[int, int]) -> Tuple[int, i
 def extract_shape_service(
     method: str,
     image_index: int,
+    # HOG options (optional; default matches previous behavior)
     orientations: Optional[int] = None,
     pixels_per_cell: Optional[List[int]] = None,
     cells_per_block: Optional[List[int]] = None,
     resize_width: Optional[int] = None,
     resize_height: Optional[int] = None,
     visualize: Optional[bool] = None,
+    # FAST options (optional; used when method == "FAST")
+    fast_threshold: Optional[int] = None,
+    fast_nonmax: Optional[bool] = None,
+    fast_type: Optional[str] = None,  # "TYPE_9_16" | "TYPE_7_12" | "TYPE_5_8"
 ) -> tuple[list[Any], Optional[str]]:
     """
     Extract shape/structure features and optional visualization for a single image.
@@ -176,7 +183,7 @@ def extract_shape_service(
             resize_width / resize_height (pre-resize; defaults to 64x128 legacy if not provided)
             visualize (bool, default True)
       - "SIFT": returns descriptor vectors (or empty if none)
-      - "FAST": returns list of keypoint coordinates
+      - "FAST": returns list of [x, y] keypoint coordinates (optionally with OpenCV FAST)
 
     Returns: (features, visualization_base64 or None)
     """
@@ -243,61 +250,99 @@ def extract_shape_service(
         kp, des = sift.detectAndCompute(arr, None)
         features = des.tolist() if des is not None else []
         img_kp = cv2.drawKeypoints(arr, kp, None, color=(0, 255, 0))
-        # <<< FIXED LINE >>>
         pil_kp = Image.fromarray(cv2.cvtColor(img_kp, cv2.COLOR_BGR2RGB))
         buf = io.BytesIO()
         pil_kp.save(buf, format='PNG')
         viz_b64 = base64.b64encode(buf.getvalue()).decode()
 
     elif method == "FAST":
+        # --- Preferred: OpenCV FAST detector (with robust fallbacks) ---
         img_gray = img.convert('L')
         arr = np.array(img_gray)
-        kp = corner_fast(arr, threshold=30, nonmax_suppression=True)
-        features = [list(point) for point in kp]
-        keypoints = [cv2.KeyPoint(float(p[1]), float(p[0]), 1) for p in kp]
-        img_kp = cv2.drawKeypoints(arr, keypoints, None, color=(0, 255, 0))
-        pil_kp = Image.fromarray(img_kp)
-        buf = io.BytesIO()
-        pil_kp.save(buf, format='PNG')
-        viz_b64 = base64.b64encode(buf.getvalue()).decode()
+
+        # Defaults
+        th = int(fast_threshold) if fast_threshold is not None else 30
+        nms = True if fast_nonmax is None else bool(fast_nonmax)
+        ftype_label = (fast_type or "TYPE_9_16").upper()
+        type_map = {
+            "TYPE_9_16": getattr(cv2, "FAST_FEATURE_DETECTOR_TYPE_9_16", None),
+            "TYPE_7_12": getattr(cv2, "FAST_FEATURE_DETECTOR_TYPE_7_12", None),
+            "TYPE_5_8": getattr(cv2, "FAST_FEATURE_DETECTOR_TYPE_5_8", None),
+        }
+        type_value = type_map.get(ftype_label, None)
+
+        detector = None
+        try:
+            # Some builds allow passing type in the factory; others only support threshold+nonmax
+            if type_value is not None:
+                try:
+                    detector = cv2.FastFeatureDetector_create(threshold=th, nonmaxSuppression=nms, type=type_value)
+                except TypeError:
+                    detector = cv2.FastFeatureDetector_create(threshold=th, nonmaxSuppression=nms)
+                    if hasattr(detector, "setType"):
+                        detector.setType(type_value)
+            else:
+                detector = cv2.FastFeatureDetector_create(threshold=th, nonmaxSuppression=nms)
+        except Exception:
+            detector = None
+
+        if detector is not None:
+            kps = detector.detect(arr, None)  # list[cv2.KeyPoint]
+            # features as [x, y]
+            features = [[float(kp.pt[0]), float(kp.pt[1])] for kp in kps]
+
+            # Visualization
+            img_kp = cv2.drawKeypoints(
+                arr, kps, None,
+                color=(0, 255, 0),
+                flags=cv2.DRAW_MATCHES_FLAGS_DRAW_RICH_KEYPOINTS
+            )
+            pil_kp = Image.fromarray(cv2.cvtColor(img_kp, cv2.COLOR_BGR2RGB))
+            buf = io.BytesIO()
+            pil_kp.save(buf, format='PNG')
+            viz_b64 = base64.b64encode(buf.getvalue()).decode()
+        else:
+            # Fallback: skimage.corner_fast (coordinates only)
+            pts = corner_fast(arr, threshold=th, nonmax_suppression=nms)
+            features = [[float(p[1]), float(p[0])] for p in pts]  # convert (row, col) -> (x, y)
+            keypoints = [cv2.KeyPoint(float(p[1]), float(p[0]), 1) for p in pts]
+            img_kp = cv2.drawKeypoints(arr, keypoints, None, color=(0, 255, 0))
+            pil_kp = Image.fromarray(cv2.cvtColor(img_kp, cv2.COLOR_BGR2RGB))
+            buf = io.BytesIO()
+            pil_kp.save(buf, format='PNG')
+            viz_b64 = base64.b64encode(buf.getvalue()).decode()
 
     return features, viz_b64
 
-# ----------------------------------------------------------------------
-# SIFT extraction
-# ----------------------------------------------------------------------
 
+# ----------------------------------------------------------------------
+# SIFT extraction (standalone utility)
+# ----------------------------------------------------------------------
 def _get_sift_detector():
     """
     Return a callable that creates a SIFT detector.
-    Tries the three common ways OpenCV exposes SIFT.
-    Raises a RuntimeError with a clear message if none are available.
+    Tries the common ways OpenCV exposes SIFT.
     """
-    # 1️⃣ New OpenCV ≥4.4 (SIFT moved to the main module)
     if hasattr(cv2, "SIFT_create"):
         return cv2.SIFT_create
-
-    # 2️⃣ OpenCV‑contrib (xfeatures2d) – older builds
     if hasattr(cv2, "xfeatures2d") and hasattr(cv2.xfeatures2d, "SIFT_create"):
         return cv2.xfeatures2d.SIFT_create
-
-    # 3️⃣ Fallback to ORB (free) – optional, you can just raise
     raise RuntimeError(
         "SIFT is not available in the installed OpenCV package. "
-        "Install `opencv-contrib-python` (or a build that includes SIFT) "
-        "or use the ORB fallback."
+        "Install `opencv-contrib-python` (or a build that includes SIFT)."
     )
+
+
 def extract_sift_service(
     image_index: Optional[int] = None,
     all_images: bool = False,
     image_indices: Optional[List[int]] = None,
-    resize: Optional[int] = 256,          # size to which the image is resized before detection
+    resize: Optional[int] = 256,
 ) -> Tuple[List[List[float]], Optional[bytes]]:
     """
     Run OpenCV SIFT on one or more images.
     Returns (features, visualisation_png_bytes_or_None).
     """
-    # ---------- decide which images to process ----------
     ids = get_all_image_ids()
     if all_images:
         indices = list(range(len(ids)))
@@ -310,9 +355,8 @@ def extract_sift_service(
     else:
         raise ValueError("Provide image_index, image_indices or all_images=True")
 
-    # ---------- get a SIFT detector (will raise a clear error if missing) ----------
     try:
-        sift_ctor = _get_sift_detector()          # helper defined earlier in the file
+        sift_ctor = _get_sift_detector()
     except RuntimeError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
 
@@ -323,7 +367,6 @@ def extract_sift_service(
 
     for idx in indices:
         img_bytes = load_image(ids[idx])
-        # Decode to grayscale (SIFT works on a single channel)
         img = cv2.imdecode(np.frombuffer(img_bytes, np.uint8), cv2.IMREAD_GRAYSCALE)
         if img is None:
             continue
@@ -335,9 +378,7 @@ def extract_sift_service(
         if des is not None:
             all_features.extend(des.tolist())
 
-        # Visualisation only when a *single* image is requested
         if len(indices) == 1:
-            # Draw key‑points on the image (still BGR)
             img_kp = cv2.drawKeypoints(
                 img,
                 kp,
@@ -345,7 +386,6 @@ def extract_sift_service(
                 flags=cv2.DRAW_MATCHES_FLAGS_DRAW_RICH_KEYPOINTS,
                 color=(0, 255, 0),
             )
-            # Convert BGR → RGB so Pillow shows the correct colours
             pil_kp = Image.fromarray(cv2.cvtColor(img_kp, cv2.COLOR_BGR2RGB))
             buf = io.BytesIO()
             pil_kp.save(buf, format="PNG")
@@ -387,7 +427,7 @@ def extract_edges_service(
         raise ValueError("Provide image_index, image_indices or all_images=True")
 
     edge_imgs_b64: List[str] = []
-    all_matrices: List[List[List[float]]] = []  # Will collect ALL matrices
+    all_matrices: List[List[List[float]]] = []
 
     for idx in indices:
         img_bytes = load_image(ids[idx])
@@ -405,16 +445,16 @@ def extract_edges_service(
         else:
             raise ValueError("method must be 'canny' or 'sobel'")
 
-        # Encode PNG for the UI
         pil = Image.fromarray(edges)
         buf = io.BytesIO()
         pil.save(buf, format="PNG")
         edge_imgs_b64.append(base64.b64encode(buf.getvalue()).decode())
 
-        # Collect ALL matrices (not just the first one)
         all_matrices.append(edges.astype(float).tolist())
 
     return edge_imgs_b64, all_matrices
+
+
 # --------------------------
 # Legacy Haralick
 # --------------------------
@@ -647,7 +687,7 @@ def compute_lbp_service(
 
 
 # --------------------------
-# NEW: Contour Extraction
+# Contour Extraction
 # --------------------------
 def extract_contours_service(
     image_index: int,
@@ -697,14 +737,13 @@ def extract_contours_service(
         area = float(cv2.contourArea(c))
         if area < (min_area or 0):
             continue
-        pts = c.squeeze().tolist()
         kept_contours.append(c)  # keep cv2 contour for drawing later
         areas.append(area)
         if return_bounding_boxes:
             x, y, w, h = cv2.boundingRect(c)
             bounding_boxes.append([int(x), int(y), int(w), int(h)])
 
-    # Build results as plain lists
+    # Build results as plain lists (x,y pairs)
     results_points = [kc.squeeze().tolist() for kc in kept_contours]
 
     # Make overlay that only shows kept contours (green)

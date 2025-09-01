@@ -33,11 +33,14 @@ class ShapeRequest(BaseModel):
     """
     Generic shape/feature extraction request.
 
-    When method == "HOG", the optional parameters below (orientations, pixels_per_cell,
-    cells_per_block, resize_* and visualize) will be used if provided; otherwise
-    backend defaults are applied.
+    method:
+      - "HOG": optional parameters (below) are used if provided; otherwise service defaults.
+      - "SIFT": ignores the optional HOG/FAST parameters.
+      - "FAST": uses the optional FAST parameters (threshold, nonmax, type).
 
-    For other methods ("SIFT", "FAST"), these optional fields are ignored.
+    Notes:
+      * fast_type is only relevant when the backend uses OpenCV's FAST (TYPE_9_16, TYPE_7_12, TYPE_5_8).
+        If the backend uses skimage.corner_fast, it's ignored.
     """
     method: Literal["HOG", "SIFT", "FAST"]
     image_index: int
@@ -64,14 +67,28 @@ class ShapeRequest(BaseModel):
         default=None, description="Return HOG visualization image (default: True)"
     )
 
+    # --- Optional FAST parameters (used only when method == "FAST") ---
+    fast_threshold: Optional[int] = Field(
+        default=None, ge=0, le=255,
+        description="FAST corner threshold (default: backend uses 30 if None)"
+    )
+    fast_nonmax: Optional[bool] = Field(
+        default=None, description="Enable non-max suppression (default: True if None)"
+    )
+    fast_type: Optional[Literal["TYPE_9_16", "TYPE_7_12", "TYPE_5_8"]] = Field(
+        default=None,
+        description="OpenCV FAST type; ignored by skimage.corner_fast. Default: TYPE_9_16"
+    )
+
+
 class FeatureBaseRequest(BaseModel):
     """
-    Common fields for any feature‑extraction endpoint that works by image index.
+    Common fields for any feature-extraction endpoint that works by image index.
     """
     image_index: Optional[int] = Field(
         None,
         description=(
-            "Zero‑based index of the image inside the dataset. Ignored if "
+            "Zero-based index of the image inside the dataset. Ignored if "
             "`all_images=True`."
         ),
     )
@@ -91,13 +108,14 @@ class FeatureBaseRequest(BaseModel):
 class SiftResponse(BaseModel):
     """Returned by the /sift endpoint."""
     features: List[List[float]]               # each SIFT descriptor = 128 floats
-    visualization: Optional[str] = None       # base64‑encoded PNG with key‑points
+    visualization: Optional[str] = None       # base64-encoded PNG with key-points
 
 
 class EdgeResponse(BaseModel):
     """Returned by the /edges endpoint."""
     edge_image: str                           # base64 PNG of the edge map
     edges_matrix: Optional[List[List[float]]] = None   # optional gradient matrix
+
 
 class StatsRequest(BaseModel):
     data: Dict[str, Any]
@@ -141,7 +159,7 @@ class LBPRequest(BaseModel):
     normalize: bool = True
 
 
-# ---- NEW: Contour extraction ----
+# ---- Contour extraction ----
 class ContourRequest(BaseModel):
     """
     Request model for contour extraction.

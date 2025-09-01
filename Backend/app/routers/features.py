@@ -1,11 +1,12 @@
 # backend/app/routers/features.py
 
 import logging
+import base64
+from typing import List, Dict, Any
+
 from fastapi import APIRouter, HTTPException, UploadFile, File
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
-from typing import List, Dict, Any
-import base64
 
 from app.services.feature_service import (
     generate_histogram_service,
@@ -16,24 +17,24 @@ from app.services.feature_service import (
     extract_haralick_features_service,  # table-style Haralick extraction
     compute_lbp_service,                # LBP service
     extract_contours_service,           # Contour extraction
-    extract_sift_service,
-    extract_edges_service,
+    extract_sift_service,               # SIFT endpoint (multi/single)
+    extract_edges_service,              # Edge detection endpoint
 )
 
 from app.models.requests import (
     HaralickExtractRequest,
     LBPRequest,
     ContourRequest,                     # contour request model
-    ShapeRequest,                       # NEW: import enhanced ShapeRequest (with HOG params)
-    FeatureBaseRequest,
-    SiftResponse,
-    EdgeResponse,
-)   
+    ShapeRequest,                       # enhanced ShapeRequest (HOG + FAST options)
+    FeatureBaseRequest,                 # base selector for single/multi/all image ops
+    SiftResponse,                       # (imported for consistency; response returned as dict)
+    EdgeResponse,                       # (imported for consistency; response returned as dict)
+)
 
 router = APIRouter()
 
-# ---- Request Models (legacy inline ones kept for backwards compat) ----
 
+# ---- Request Models (legacy inline ones kept for backwards compat) ----
 class HistogramRequest(BaseModel):
     hist_type: str
     image_index: int
@@ -47,8 +48,9 @@ class KMeansRequest(BaseModel):
     use_all_images: bool = False
 
 
-# ---- Endpoints ----
-
+# -------------------------------
+# Endpoints
+# -------------------------------
 @router.post("/histogram")
 async def histogram(request: HistogramRequest):
     """
@@ -93,22 +95,28 @@ def shape_features(request: ShapeRequest):
     Extract shape/structure features from a single image.
 
     Supported methods:
-      - "HOG": can accept optional parameters:
+      - "HOG": optional parameters:
           orientations, pixels_per_cell [h,w], cells_per_block [y,x],
           resize_width, resize_height, visualize
-      - "SIFT", "FAST": ignore the optional HOG parameters
+      - "SIFT": ignores HOG/FAST extras
+      - "FAST": optional parameters:
+          fast_threshold, fast_nonmax, fast_type ("TYPE_9_16" | "TYPE_7_12" | "TYPE_5_8")
     """
     try:
         features, viz_b64 = extract_shape_service(
             method=request.method,
             image_index=request.image_index,
-            # Optional HOG params (service will ignore when method != "HOG")
-            orientations=request.orientations,
-            pixels_per_cell=request.pixels_per_cell,
-            cells_per_block=request.cells_per_block,
-            resize_width=request.resize_width,
-            resize_height=request.resize_height,
-            visualize=request.visualize,
+            # HOG params (service ignores when method != "HOG")
+            orientations=getattr(request, "orientations", None),
+            pixels_per_cell=getattr(request, "pixels_per_cell", None),
+            cells_per_block=getattr(request, "cells_per_block", None),
+            resize_width=getattr(request, "resize_width", None),
+            resize_height=getattr(request, "resize_height", None),
+            visualize=getattr(request, "visualize", None),
+            # FAST params (service ignores when method != "FAST")
+            fast_threshold=getattr(request, "fast_threshold", None),
+            fast_nonmax=getattr(request, "fast_nonmax", None),
+            fast_type=getattr(request, "fast_type", None),
         )
         response: Dict[str, Any] = {"features": features}
         if viz_b64:
@@ -220,16 +228,18 @@ def contour_extract(req: ContourRequest):
         logging.exception("Failed to extract contours")
         raise HTTPException(status_code=400, detail=str(e))
 
+
 # ----------------------------------------------------------------------
 # SIFT endpoint
 # ----------------------------------------------------------------------
 @router.post("/sift")
 def sift(request: FeatureBaseRequest):
     """
-    Returns:
+    Run OpenCV SIFT on one or more images (single-image returns a visualization).
+    Response:
         {
             "features": [[float, ...], ...],
-            "visualization": base64_str | null  # single image only
+            "visualization": base64_str | null
         }
     """
     try:
@@ -238,19 +248,15 @@ def sift(request: FeatureBaseRequest):
             all_images=request.all_images,
             image_indices=request.image_indices,
         )
-        # Only return visualization for SINGLE-IMAGE requests
         viz_b64 = base64.b64encode(viz_bytes).decode() if viz_bytes else None
-        return {
-            "features": feats,
-            "visualization": viz_b64,
-        }
+        return {"features": feats, "visualization": viz_b64}
     except Exception as e:
         logging.exception("SIFT extraction failed")
         raise HTTPException(status_code=500, detail=str(e))
 
 
 # ----------------------------------------------------------------------
-# Edge‑detection endpoint (Canny by default)
+# Edge-detection endpoint (Canny by default)
 # ----------------------------------------------------------------------
 @router.post("/edges")
 def edges(
@@ -261,12 +267,15 @@ def edges(
     sobel_ksize: int = 3,
 ):
     """
-    Returns:
+    Apply edge detection (Canny or Sobel) to one/multiple/all images selected via FeatureBaseRequest.
+    Query params can adjust the method and thresholds.
+
+    Response:
         {
-            "edge_images": [base64_str, ...],  # one per processed image
-            "edges_matrices": [                # ALL gradient matrices
-                [[float, ...], ...],  # matrix for image 0
-                [[float, ...], ...],  # matrix for image 1
+            "edge_images": [base64_str, ...],   # one per processed image
+            "edges_matrices": [                 # ALL gradient matrices
+                [[float, ...], ...],            # for image 0
+                [[float, ...], ...],            # for image 1
                 ...
             ]
         }
@@ -281,10 +290,7 @@ def edges(
             high_thresh=high_thresh,
             sobel_ksize=sobel_ksize,
         )
-        return {
-            "edge_images": edge_imgs_b64,
-            "edges_matrices": all_matrices,  # Returns ALL matrices
-        }
+        return {"edge_images": edge_imgs_b64, "edges_matrices": all_matrices}
     except Exception as e:
         logging.exception("Edge detection failed")
         raise HTTPException(status_code=500, detail=str(e))
