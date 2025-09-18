@@ -1,5 +1,4 @@
 # backend/app/services/data_service.py
-
 import os
 import logging
 from pathlib import Path
@@ -11,6 +10,7 @@ import zipfile
 import hashlib
 import mimetypes
 from urllib.parse import urlparse
+import tempfile
 
 import requests
 
@@ -49,6 +49,55 @@ async def save_uploaded_images(files: list[UploadFile]) -> list[str]:
             f.write(contents)
         image_ids.append(filename)
     return image_ids
+
+
+async def save_and_extract_zip(zip_file: UploadFile) -> list[str]:
+    """
+    Save the zip temporarily, extract only image files
+    (.png/.jpg/.jpeg/.tif/...) to BASE_DATA_DIR and return
+    a list of extracted paths.
+    """
+    # 1) Save zip to a temporary file
+    suffix = "_" + zip_file.filename
+    with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
+        tmp_path = Path(tmp.name)
+        # Stream copy
+        while chunk := await zip_file.read(1024 * 1024):
+            tmp.write(chunk)
+
+    # 2) Extract
+    extracted = []
+    with zipfile.ZipFile(tmp_path) as z:
+        for member in z.infolist():
+            # Ignore directories
+            if member.is_dir():
+                continue
+            # Filter image extensions
+            if not member.filename.lower().endswith((".png", ".jpg", ".jpeg", ".tif", ".tiff")):
+                continue
+            dest_path = IMAGE_DIR / member.filename
+            dest_path.parent.mkdir(parents=True, exist_ok=True)
+            # Safe extraction: prevent path traversal
+            _safe_extract(z, member, dest_path)
+            extracted.append(str(dest_path.resolve()))
+
+    # 3) Remove temporary source
+    tmp_path.unlink(missing_ok=True)
+    # Reset file cursor
+    await zip_file.seek(0)
+    return extracted
+
+def _safe_extract(zf: zipfile.ZipFile, member: zipfile.ZipInfo, dest_path: Path):
+    """
+    Prevent path traversal attacks.
+    """
+    dest_path = dest_path.resolve()
+    root_dir = IMAGE_DIR.resolve()
+    if not str(dest_path).startswith(str(root_dir)):
+        raise RuntimeError("Path traversal detected in ZIP file")
+    # Write file
+    with zf.open(member) as source, open(dest_path, "wb") as target:
+        target.write(source.read())
 
 async def read_metadata(file: UploadFile, delimiter: str, decimal_sep: str) -> list[str]:
     """

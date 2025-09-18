@@ -2,7 +2,7 @@
 
 from fastapi import APIRouter, UploadFile, Form, File, HTTPException
 from fastapi.responses import JSONResponse
-from typing import List
+from typing import List, Optional
 import logging
 import base64
 
@@ -12,10 +12,30 @@ from app.models.requests import ConfigureMetadataRequest, ReplaceImageRequest
 router = APIRouter()
 
 @router.post("/images")
-async def upload_images(files: List[UploadFile]):
+async def upload_images(
+    images: Optional[List[UploadFile]] = File(None, description="Imagens soltas"),
+    zip_file: Optional[UploadFile] = File(None, description="Zip contendo imagens")
+):
     try:
-        image_ids = await data_service.save_uploaded_images(files)
-        return {"image_ids": image_ids}
+        saved_files = []
+
+        # 1) imagens avulsas
+        if images:
+            for img in images:
+                saved_path = await data_service.save_uploaded_image(img)
+                saved_files.append(saved_path)
+
+        # 2) ZIP
+        if zip_file:
+            if not zip_file.filename.lower().endswith(".zip"):
+                raise HTTPException(status_code=400, detail="zip_file deve ser .zip")
+            extracted_paths = await data_service.save_and_extract_zip(zip_file)
+            saved_files.extend(extracted_paths)
+
+        if not saved_files:
+            raise HTTPException(status_code=400, detail="Nenhum arquivo válido enviado")
+
+        return {"image_ids": saved_files}
     except Exception as e:
         logging.exception("Failed to upload images")
         return JSONResponse(status_code=500, content={"error": str(e)})

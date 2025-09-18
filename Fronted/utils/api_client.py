@@ -15,9 +15,19 @@ def _get_base_url():
 # -----------------------------
 # Upload & Metadata
 # -----------------------------
-def upload_images(image_files):
-    url = f"{_get_base_url()}/upload/images"
-    files = [("files", (f.name, f.getvalue(), f.type)) for f in image_files]
+def upload_images(image_files=None, zip_file=None):
+    url = f"{_get_base_url()}/data/images"
+    files = {}
+
+    if image_files:
+        files.update([("images", (f.name, f.getvalue(), f.type)) for f in image_files])
+
+    if zip_file:
+        files["zip_file"] = (zip_file.name, zip_file.getvalue(), "application/zip")
+
+    if not files:
+        raise ValueError("No files provided")
+
     resp = requests.post(url, files=files)
     resp.raise_for_status()
     return resp.json().get("image_ids", [])

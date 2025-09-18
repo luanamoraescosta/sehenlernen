@@ -24,6 +24,12 @@ def render_data_input():
         key="upload_images_files"
     )
 
+    zip_file = st.file_uploader(
+        "Choose a ZIP file containing images",
+        type=["zip"],
+        key="upload_zip_file"
+    )
+
     # Live local previews (persist to session so Feature Selection can see them)
     if image_files:
         try:
@@ -35,11 +41,11 @@ def render_data_input():
             st.session_state["images"] = []
 
     # Manual upload button (kept as-is)
-    if image_files:
+    if image_files or zip_file:
         if st.button("Upload Images", key="btn_upload_images"):
             with st.spinner("Uploading images..."):
                 try:
-                    image_ids = api_client.upload_images(image_files)
+                    image_ids = api_client.upload_images(image_files, zip_file)
                     st.session_state["uploaded_image_ids"] = image_ids
                     st.success(f"Uploaded {len(image_ids)} images successfully.")
                 except Exception as e:
