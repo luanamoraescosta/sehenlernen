@@ -27,6 +27,7 @@ from utils.api_client import (
     similarity_search,             # NEW: Similarity search
     get_similarity_methods,        # NEW: Get available methods
     precompute_similarity_features, # NEW: Precompute features
+    extract_image_embedding,       # NEW: Image embedding extraction
 )
 
 # ---------- Helpers ----------
@@ -424,19 +425,148 @@ def render_feature_selection():
     # --- Shape Features ---
     with tab3:
         st.subheader("Shape Feature Extraction")
-        shape_methods = ["HOG", "SIFT", "FAST"]
-        shape_method = st.selectbox("Method", options=shape_methods, key="shape_method")
-        selected_idx = st.selectbox(
-            "Select Image", options=list(range(len(images))), format_func=lambda x: f"Image {x+1}", key="shape_img_idx"
-        )
+        
+        # Create sub-tabs for different feature types
+        shape_subtab1, shape_subtab2 = st.tabs(["Traditional Features", "Deep Learning Embeddings"])
+        
+        # Traditional shape features (HOG, SIFT, FAST)
+        with shape_subtab1:
+            shape_methods = ["HOG", "SIFT", "FAST"]
+            shape_method = st.selectbox("Method", options=shape_methods, key="shape_method")
+            selected_idx = st.selectbox(
+                "Select Image", options=list(range(len(images))), format_func=lambda x: f"Image {x+1}", key="shape_img_idx"
+            )
 
-        if st.button("Extract Shape Features", key="btn_shape"):
-            result = extract_shape_features({"method": shape_method, "image_index": selected_idx})
-            st.write(f"{shape_method} Features:")
-            st.write(result.get("features"))
-            viz = result.get("visualization")
-            if viz:
-                st.image(viz, caption=f"{shape_method} Visualization", width=400)
+            if st.button("Extract Shape Features", key="btn_shape"):
+                result = extract_shape_features({"method": shape_method, "image_index": selected_idx})
+                st.write(f"{shape_method} Features:")
+                st.write(result.get("features"))
+                viz = result.get("visualization")
+                if viz:
+                    st.image(viz, caption=f"{shape_method} Visualization", width=400)
+        
+        # Deep learning embeddings
+        with shape_subtab2:
+            st.markdown("### Image Embedding Extraction")
+            st.markdown("Extract fixed-length feature vectors using deep neural networks (ResNet, MobileNet).")
+            
+            # Model selection
+            model_options = {
+                "ResNet-50 (2048D)": "resnet50",
+                "ResNet-18 (512D)": "resnet18", 
+                "MobileNet-v2 (1280D)": "mobilenet_v2"
+            }
+            selected_model_name = st.selectbox(
+                "Select Model",
+                options=list(model_options.keys()),
+                key="embedding_model",
+                help="Choose a pretrained model. Higher dimensions capture more information but require more storage."
+            )
+            selected_model = model_options[selected_model_name]
+            
+            # Image selection
+            embed_mode = st.radio(
+                "Process",
+                options=["Single Image", "All Images"],
+                key="embed_mode",
+                horizontal=True
+            )
+            
+            if embed_mode == "Single Image":
+                embed_idx = st.selectbox(
+                    "Select Image",
+                    options=list(range(len(images))),
+                    format_func=lambda x: f"Image {x+1}",
+                    key="embed_img_idx"
+                )
+                use_all = False
+                image_indices = [embed_idx]
+            else:
+                use_all = True
+                image_indices = None
+                st.info(f"Will process all {len(images)} images")
+            
+            # Extract button
+            if st.button("🎯 Extract Embeddings", key="btn_embedding", type="primary"):
+                with st.spinner(f"Extracting embeddings using {selected_model_name}..."):
+                    try:
+                        params = {
+                            "image_indices": image_indices,
+                            "use_all_images": use_all,
+                            "model_name": selected_model
+                        }
+                        result = extract_image_embedding(params)
+                        
+                        # Display results
+                        st.success(f"✅ Extracted embeddings for {result['num_images']} image(s)")
+                        
+                        col1, col2, col3 = st.columns(3)
+                        with col1:
+                            st.metric("Model", result['model_name'])
+                        with col2:
+                            st.metric("Embedding Dimension", result['embedding_dim'])
+                        with col3:
+                            st.metric("Images Processed", result['num_images'])
+                        
+                        # Show embeddings
+                        st.markdown("#### Embedding Vectors")
+                        
+                        embeddings = result['embeddings']
+                        image_ids = result['image_ids']
+                        
+                        # Display in expandable sections
+                        for i, (emb, img_id) in enumerate(zip(embeddings, image_ids)):
+                            with st.expander(f"Image {i+1} ({img_id}) - {len(emb)}D vector"):
+                                # Show first 10 values as preview
+                                st.write(f"**Preview (first 10 values):** {emb[:10]}")
+                                st.write(f"**Shape:** {len(emb)} dimensions")
+                                
+                                # Show statistics
+                                emb_array = np.array(emb)
+                                col_a, col_b, col_c = st.columns(3)
+                                with col_a:
+                                    st.metric("Mean", f"{emb_array.mean():.4f}")
+                                with col_b:
+                                    st.metric("Std Dev", f"{emb_array.std():.4f}")
+                                with col_c:
+                                    st.metric("L2 Norm", f"{np.linalg.norm(emb_array):.4f}")
+                                
+                                # Full vector as CSV download
+                                csv_data = ",".join(map(str, emb))
+                                st.download_button(
+                                    label="📥 Download Full Vector (CSV)",
+                                    data=csv_data,
+                                    file_name=f"embedding_{img_id}.csv",
+                                    mime="text/csv",
+                                    key=f"download_emb_{i}"
+                                )
+                        
+                        # Download all embeddings as CSV
+                        if len(embeddings) > 1:
+                            st.markdown("---")
+                            # Create CSV with all embeddings
+                            csv_rows = []
+                            csv_rows.append(["image_id"] + [f"dim_{j}" for j in range(len(embeddings[0]))])
+                            for img_id, emb in zip(image_ids, embeddings):
+                                csv_rows.append([img_id] + emb)
+                            
+                            csv_buffer = io.StringIO()
+                            import csv
+                            writer = csv.writer(csv_buffer)
+                            writer.writerows(csv_rows)
+                            
+                            st.download_button(
+                                label="📥 Download All Embeddings (CSV)",
+                                data=csv_buffer.getvalue(),
+                                file_name=f"all_embeddings_{selected_model}.csv",
+                                mime="text/csv",
+                                key="download_all_emb"
+                            )
+                            
+                    except Exception as e:
+                        st.error(f"Failed to extract embeddings: {str(e)}")
+                        if "PyTorch is not installed" in str(e):
+                            st.info("💡 Please install PyTorch in the backend: `pip install torch torchvision`")
 
     # --- Similarity Search ---
     with tab4:
@@ -634,34 +764,25 @@ def render_feature_selection():
                             else:
                                 st.success(f"🎉 Found {len(similar_images)} similar images!")
                                 
+                                # Build image_id to index mapping
+                                id_to_index = {img_id: idx for idx, img_id in enumerate(st.session_state.uploaded_image_ids)}
                                 # Display results
                                 for i, img_data in enumerate(similar_images[:6]):
                                     image_id = img_data["image_id"]
                                     similarity_score = img_data["similarity_score"]
-                                    
-                                    # Find image index
-                                    image_idx = None
-                                    if hasattr(st.session_state, 'uploaded_image_ids') and st.session_state.uploaded_image_ids:
-                                        try:
-                                            image_idx = st.session_state.uploaded_image_ids.index(image_id)
-                                        except (ValueError, AttributeError):
-                                            pass
-                                    
-                                    # Display result
+                                    image_idx = id_to_index.get(image_id)
                                     result_col1, result_col2 = st.columns([1, 2])
                                     with result_col1:
                                         if image_idx is not None and image_idx < len(images):
                                             st.image(images[image_idx], width=80)
                                         else:
                                             st.write("📷")
-                                    
                                     with result_col2:
                                         if image_idx is not None:
                                             st.write(f"**Image {image_idx + 1}** ({image_id})")
                                         else:
                                             st.write(f"**{image_id}**")
                                         st.metric("Similarity", f"{similarity_score:.3f}", help="Higher = more similar")
-                                    
                                     if i < len(similar_images) - 1:
                                         st.markdown("---")
                                 

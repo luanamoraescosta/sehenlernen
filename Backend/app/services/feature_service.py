@@ -762,3 +762,113 @@ def extract_contours_service(
         "hierarchy": hierarchy.tolist() if return_hierarchy and hierarchy is not None else None,
         "visualization": viz_b64,
     }
+
+
+# --------------------------
+# Image Embedding Extraction
+# --------------------------
+def extract_embedding_service(
+    image_indices: Optional[List[int]] = None,
+    use_all_images: bool = False,
+    model_name: str = "resnet50",
+    layer: Optional[str] = None
+) -> Dict[str, Any]:
+    """
+    Extract deep learning embeddings from images using pretrained models.
+    
+    Args:
+        image_indices: List of image indices to process
+        use_all_images: If True, process all images
+        model_name: Name of the model to use ("resnet50", "resnet18", "mobilenet_v2")
+        layer: Optional layer name for custom extraction (defaults to last feature layer)
+    
+    Returns:
+        Dictionary containing embeddings and metadata
+    """
+    try:
+        import torch
+        import torchvision.models as models
+        import torchvision.transforms as transforms
+    except ImportError:
+        raise HTTPException(
+            status_code=500,
+            detail="PyTorch is not installed. Please install torch and torchvision."
+        )
+    
+    # Determine which images to process
+    img_ids = get_all_image_ids()
+    if use_all_images:
+        indices_to_process = list(range(len(img_ids)))
+    elif image_indices:
+        indices_to_process = image_indices
+    else:
+        raise HTTPException(status_code=400, detail="Must specify image_indices or use_all_images=True")
+    
+    # Load pretrained model
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    
+    if model_name == "resnet50":
+        model = models.resnet50(weights=models.ResNet50_Weights.IMAGENET1K_V1)
+        # Remove the final classification layer to get embeddings
+        model = torch.nn.Sequential(*list(model.children())[:-1])
+        embedding_dim = 2048
+    elif model_name == "resnet18":
+        model = models.resnet18(weights=models.ResNet18_Weights.IMAGENET1K_V1)
+        model = torch.nn.Sequential(*list(model.children())[:-1])
+        embedding_dim = 512
+    elif model_name == "mobilenet_v2":
+        model = models.mobilenet_v2(weights=models.MobileNet_V2_Weights.IMAGENET1K_V1)
+        # MobileNetV2 features are in model.features
+        model = model.features
+        embedding_dim = 1280
+    else:
+        raise HTTPException(status_code=400, detail=f"Unsupported model: {model_name}")
+    
+    model = model.to(device)
+    model.eval()
+    
+    # Image preprocessing
+    preprocess = transforms.Compose([
+        transforms.Resize(256),
+        transforms.CenterCrop(224),
+        transforms.ToTensor(),
+        transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
+    ])
+    
+    # Extract embeddings
+    embeddings_list = []
+    image_ids_list = []
+    
+    with torch.no_grad():
+        for idx in indices_to_process:
+            if idx >= len(img_ids):
+                continue
+                
+            img_id = img_ids[idx]
+            img_bytes = load_image(img_id)
+            
+            # Convert bytes to PIL Image
+            pil_img = Image.open(io.BytesIO(img_bytes))
+            
+            # Convert to RGB if needed
+            if pil_img.mode != 'RGB':
+                pil_img = pil_img.convert('RGB')
+            
+            # Preprocess and get embedding
+            img_tensor = preprocess(pil_img).unsqueeze(0).to(device)
+            embedding = model(img_tensor)
+            
+            # Flatten the embedding
+            embedding = embedding.view(embedding.size(0), -1)
+            embedding_np = embedding.cpu().numpy().flatten()
+            
+            embeddings_list.append(embedding_np.tolist())
+            image_ids_list.append(img_id)
+    
+    return {
+        "embeddings": embeddings_list,
+        "image_ids": image_ids_list,
+        "model_name": model_name,
+        "embedding_dim": embedding_dim,
+        "num_images": len(embeddings_list)
+    }

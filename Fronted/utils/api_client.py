@@ -590,3 +590,31 @@ def extract_fast_features(
         result["visualization"] = None
 
     return result
+
+
+# ----------------------------------------------------------------------
+# Image Embedding Extraction
+# ----------------------------------------------------------------------
+def extract_image_embedding(params):
+    """
+    Extract deep learning embeddings from images.
+    
+    Args:
+        params: dict with keys:
+            - image_indices: list of int (optional if use_all_images=True)
+            - use_all_images: bool (default False)
+            - model_name: str ("resnet50", "resnet18", "mobilenet_v2")
+            - layer: str (optional, for custom layer extraction)
+    
+    Returns:
+        dict with:
+            - embeddings: list of embedding vectors
+            - image_ids: list of image IDs
+            - model_name: name of model used
+            - embedding_dim: dimension of embeddings
+            - num_images: number of images processed
+    """
+    url = f"{_get_base_url()}/features/embedding"
+    resp = requests.post(url, json=params)
+    resp.raise_for_status()
+    return resp.json()

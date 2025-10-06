@@ -2,7 +2,7 @@
 
 import logging
 import base64
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Optional
 
 from fastapi import APIRouter, HTTPException, UploadFile, File
 from fastapi.responses import JSONResponse
@@ -294,3 +294,39 @@ def edges(
     except Exception as e:
         logging.exception("Edge detection failed")
         raise HTTPException(status_code=500, detail=str(e))
+
+
+# ---- Image Embedding Extraction ----
+class EmbeddingRequest(BaseModel):
+    image_indices: Optional[List[int]] = None
+    use_all_images: bool = False
+    model_name: str = "resnet50"  # resnet50, resnet18, mobilenet_v2
+    layer: Optional[str] = None
+
+
+@router.post("/embedding")
+def extract_embedding(request: EmbeddingRequest):
+    """
+    Extract deep learning embeddings from images.
+    
+    Supported models:
+      - resnet50: 2048-dimensional embeddings (default)
+      - resnet18: 512-dimensional embeddings
+      - mobilenet_v2: 1280-dimensional embeddings
+    
+    Returns embeddings as a list of vectors along with metadata.
+    """
+    from app.services.feature_service import extract_embedding_service
+    
+    try:
+        result = extract_embedding_service(
+            image_indices=request.image_indices,
+            use_all_images=request.use_all_images,
+            model_name=request.model_name,
+            layer=request.layer
+        )
+        return result
+    except Exception as e:
+        logging.exception("Failed to extract embeddings")
+        raise HTTPException(status_code=500, detail=str(e))
+
