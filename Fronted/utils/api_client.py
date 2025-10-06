@@ -12,11 +12,28 @@ def _get_base_url():
     return os.getenv("SEHEN_LERNEN_API_URL", "http://localhost:8000")
 
 
+def get_current_image_ids():
+    """Get the current image IDs from backend in the order they are stored."""
+    url = f"{_get_base_url()}/upload/current-image-ids"
+    resp = requests.get(url)
+    resp.raise_for_status()
+    return resp.json().get("image_ids", [])
+
+
+def clear_all_backend_images():
+    """Clear all images from the backend storage."""
+    url = f"{_get_base_url()}/upload/clear-all-images"
+    resp = requests.delete(url)
+    resp.raise_for_status()
+    return resp.json()
+
+
 # -----------------------------
 # Upload & Metadata
 # -----------------------------
 def upload_images(image_files=None, zip_file=None):
-    url = f"{_get_base_url()}/data/images"
+    # Backend router is mounted under /upload (see Backend/app/main.py)
+    url = f"{_get_base_url()}/upload/images"
     files = {}
 
     if image_files:
@@ -363,6 +380,133 @@ def extract_sift_features(params):
         result["visualization"] = None
 
     return result
+
+
+# ----------------------------------------------------------------------
+# Similarity Search
+# ----------------------------------------------------------------------
+def similarity_search(
+    query_image_index=None,
+    query_image_base64=None,
+    feature_method="CNN",
+    distance_metric="cosine",
+    max_results=10,
+    threshold=None,
+    resize_dimensions=None,
+    hog_orientations=None,
+    hog_pixels_per_cell=None,
+    hog_cells_per_block=None,
+    hist_bins=None,
+    hist_channels=None
+):
+    """
+    Perform similarity search to find visually similar images.
+    
+    Args:
+        query_image_index: Index of uploaded image to use as query
+        query_image_base64: Base64 encoded query image (alternative to index)
+        feature_method: Feature extraction method ("CNN", "HOG", "SIFT", "histogram")
+        distance_metric: Distance metric ("cosine", "euclidean", "manhattan")
+        max_results: Maximum number of similar images to return
+        threshold: Similarity threshold (0-1, higher = more similar)
+        resize_dimensions: [width, height] for resizing images
+        hog_orientations: HOG orientations parameter
+        hog_pixels_per_cell: HOG pixels per cell parameter
+        hog_cells_per_block: HOG cells per block parameter
+        hist_bins: Number of bins for histogram
+        hist_channels: Color channels for histogram
+    
+    Returns:
+        Dict with similar_images, query_features, and computation_time
+    """
+    url = f"{_get_base_url()}/similarity/search"
+    
+    payload = {
+        "feature_method": feature_method,
+        "distance_metric": distance_metric,
+        "max_results": max_results
+    }
+    
+    if query_image_index is not None:
+        payload["query_image_index"] = query_image_index
+    if query_image_base64:
+        payload["query_image_base64"] = query_image_base64
+    if threshold is not None:
+        payload["threshold"] = threshold
+    if resize_dimensions:
+        payload["resize_dimensions"] = resize_dimensions
+    if hog_orientations is not None:
+        payload["hog_orientations"] = hog_orientations
+    if hog_pixels_per_cell:
+        payload["hog_pixels_per_cell"] = hog_pixels_per_cell
+    if hog_cells_per_block:
+        payload["hog_cells_per_block"] = hog_cells_per_block
+    if hist_bins is not None:
+        payload["hist_bins"] = hist_bins
+    if hist_channels:
+        payload["hist_channels"] = hist_channels
+    
+    resp = requests.post(url, json=payload)
+    resp.raise_for_status()
+    return resp.json()
+
+
+def precompute_similarity_features(
+    feature_method="CNN",
+    resize_dimensions=None,
+    hog_orientations=9,
+    hog_pixels_per_cell=None,
+    hog_cells_per_block=None,
+    hist_bins=64,
+    hist_channels=None
+):
+    """
+    Precompute features for all uploaded images to speed up similarity searches.
+    """
+    url = f"{_get_base_url()}/similarity/precompute-features"
+    
+    params = {
+        "feature_method": feature_method,
+        "hog_orientations": hog_orientations,
+        "hist_bins": hist_bins
+    }
+    
+    if resize_dimensions:
+        params["resize_dimensions"] = resize_dimensions
+    if hog_pixels_per_cell:
+        params["hog_pixels_per_cell"] = hog_pixels_per_cell
+    if hog_cells_per_block:
+        params["hog_cells_per_block"] = hog_cells_per_block
+    if hist_channels:
+        params["hist_channels"] = hist_channels
+    
+    resp = requests.post(url, params=params)
+    resp.raise_for_status()
+    return resp.json()
+
+
+def clear_similarity_cache():
+    """Clear the similarity feature cache."""
+    url = f"{_get_base_url()}/similarity/cache"
+    resp = requests.delete(url)
+    resp.raise_for_status()
+    return resp.json()
+
+
+def get_similarity_cache_stats():
+    """Get statistics about the similarity feature cache."""
+    url = f"{_get_base_url()}/similarity/cache/stats"
+    resp = requests.get(url)
+    resp.raise_for_status()
+    return resp.json()
+
+
+def get_similarity_methods():
+    """Get available feature extraction methods and distance metrics."""
+    url = f"{_get_base_url()}/similarity/methods"
+    resp = requests.get(url)
+    resp.raise_for_status()
+    return resp.json()
 
 
 # ----------------------------------------------------------------------

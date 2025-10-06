@@ -9,6 +9,7 @@ from .routers.sampling        import router as sampling_router
 from .routers.features        import router as features_router
 from .routers.stats           import router as stats_router
 from .routers.visualization   import router as visualization_router
+from .routers.similarity      import router as similarity_router
 import matplotlib
 
 
@@ -38,6 +39,7 @@ app.include_router(sampling_router,       prefix="/sampling",      tags=["Sampli
 app.include_router(features_router,       prefix="/features",      tags=["Features"])
 app.include_router(stats_router,          prefix="/stats",         tags=["Statistics"])
 app.include_router(visualization_router,  prefix="/visualization",  tags=["Visualization"])
+app.include_router(similarity_router,     prefix="/similarity",    tags=["Similarity Search"])
 
 # --- Root Endpoint ---
 @app.get("/", tags=["Root"])

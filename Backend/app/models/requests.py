@@ -173,3 +173,25 @@ class ContourRequest(BaseModel):
     min_area: Optional[int] = 10  # filter out tiny contours
     return_bounding_boxes: bool = True
     return_hierarchy: bool = False
+
+
+class SimilaritySearchRequest(BaseModel):
+    """Request model for similarity search."""
+    query_image_index: Optional[int] = Field(default=None, description="Index of uploaded image to use as query")
+    query_image_base64: Optional[str] = Field(default=None, description="Base64 encoded query image (alternative to index)")
+    feature_method: Literal["CNN", "HOG", "SIFT", "histogram"] = Field(default="CNN", description="Feature extraction method")
+    distance_metric: Literal["cosine", "euclidean", "manhattan"] = Field(default="cosine", description="Distance metric for similarity")
+    max_results: int = Field(default=10, ge=1, le=100, description="Maximum number of similar images to return")
+    threshold: Optional[float] = Field(default=None, ge=0.0, le=1.0, description="Similarity threshold (0-1, higher = more similar)")
+    
+    # Optional feature extraction parameters
+    resize_dimensions: Optional[List[int]] = Field(default=[224, 224], description="Resize images to [width, height] before feature extraction")
+    
+    # HOG specific parameters
+    hog_orientations: Optional[int] = Field(default=9, description="HOG orientations")
+    hog_pixels_per_cell: Optional[List[int]] = Field(default=[8, 8], description="HOG pixels per cell")
+    hog_cells_per_block: Optional[List[int]] = Field(default=[2, 2], description="HOG cells per block")
+    
+    # Histogram parameters
+    hist_bins: Optional[int] = Field(default=64, description="Number of bins for color histogram")
+    hist_channels: Optional[List[int]] = Field(default=[0, 1, 2], description="Color channels to use for histogram")

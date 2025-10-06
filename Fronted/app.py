@@ -4,6 +4,7 @@ from components.sidebar import render_sidebar
 from components.home import render_home
 from components.data_input import render_data_input
 from components.feature_selection import render_feature_selection
+
 from components.stats_analysis import render_stats_analysis
 from components.visualization import render_visualization
 

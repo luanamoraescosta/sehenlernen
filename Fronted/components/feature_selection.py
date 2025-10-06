@@ -4,6 +4,7 @@ import csv
 import zipfile
 import math
 import base64
+import logging
 import numpy as np
 import streamlit as st
 from PIL import Image
@@ -23,6 +24,9 @@ from utils.api_client import (
     extract_hog_features,          # NEW: HOG convenience call
     extract_sift_features,
     extract_edge_features,
+    similarity_search,             # NEW: Similarity search
+    get_similarity_methods,        # NEW: Get available methods
+    precompute_similarity_features, # NEW: Precompute features
 )
 
 # ---------- Helpers ----------
@@ -31,6 +35,52 @@ def _get_image_id_for_index(idx: int) -> str | None:
     if ids and 0 <= idx < len(ids):
         return ids[idx]
     return None
+
+
+def _ensure_backend_sync():
+    """Ensure backend is synchronized with frontend images by re-uploading if needed."""
+    try:
+        from utils.api_client import get_current_image_ids, clear_all_backend_images, upload_images
+        
+        # Get current state
+        frontend_images = st.session_state.get("images", [])
+        backend_ids = get_current_image_ids()
+        
+        # If counts don't match, clean backend and re-upload
+        if len(frontend_images) != len(backend_ids):
+            # Clear backend storage
+            clear_all_backend_images()
+            
+            # Re-upload all frontend images
+            if frontend_images:
+                # Convert PIL images to uploadable format
+                class FileWrapper:
+                    def __init__(self, name, data):
+                        self.name = name
+                        self.data = data
+                        self.type = "image/png"
+                    def getvalue(self):
+                        return self.data
+                
+                image_files = []
+                for i, img in enumerate(frontend_images):
+                    img_bytes = io.BytesIO()
+                    img.save(img_bytes, format='PNG')
+                    file_wrapper = FileWrapper(f"image_{i+1}.png", img_bytes.getvalue())
+                    image_files.append(file_wrapper)
+                
+                # Upload images and get new IDs
+                new_ids = upload_images(image_files)
+                st.session_state["uploaded_image_ids"] = new_ids
+                return True
+        else:
+            # Counts match, just update session state
+            st.session_state["uploaded_image_ids"] = backend_ids
+            return True
+            
+    except Exception as e:
+        logging.error(f"Failed to sync backend: {e}")
+        return False
 
 
 def _init_state():
@@ -160,16 +210,17 @@ def render_feature_selection():
     # =========================
     # Normal Tabs (when not cropping)
     # =========================
-    # ADD: New "Contour Extraction" tab at the end
-    tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8 = st.tabs(
+    # ADD: New tabs including Similarity Search
+    tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8, tab9 = st.tabs(
         [
             "Histogram Analysis",
-            "k-means Clustering",
+            "k-means Clustering", 
             "Shape Features",
+            "Similarity Search",             # NEW - Added here
             "Haralick Texture",
             "Co-Occurrence Texture",
-            "Local Binary Patterns (LBP)",  # NEW
-            "Contour Extraction",            # NEW
+            "Local Binary Patterns (LBP)",
+            "Contour Extraction",
             "SIFT & Edge Detection",
         ]
     )
@@ -387,12 +438,405 @@ def render_feature_selection():
             if viz:
                 st.image(viz, caption=f"{shape_method} Visualization", width=400)
 
-    # --- Haralick Texture ---
+    # --- Similarity Search ---
     with tab4:
-        st.subheader("Haralick Texture Tools")
+        st.subheader("🔍 Image Similarity Search")
+        
+        if not images:
+            st.warning("Please upload some images first in the Data Input section.")
+            return
+        
+        # Initialize uploaded_ids from session state or use a placeholder
+        uploaded_ids = st.session_state.get("uploaded_image_ids", [])
+        
+        # Silently attempt to ensure sync only if there's a clear mismatch
+        if len(uploaded_ids) != len(images):
+            try:
+                from utils.api_client import get_current_image_ids
+                backend_ids = get_current_image_ids()
+                if len(backend_ids) == len(images):
+                    st.session_state["uploaded_image_ids"] = backend_ids
+                    uploaded_ids = backend_ids
+            except:
+                # If sync fails, just proceed - similarity search can still work with indices
+                pass
+        
+        # Get available methods
+        try:
+            methods_info = get_similarity_methods()
+            available_methods = methods_info.get("feature_methods", ["CNN", "HOG", "SIFT", "histogram"])
+            available_metrics = methods_info.get("distance_metrics", ["cosine", "euclidean", "manhattan"])
+        except Exception:
+            available_methods = ["CNN", "HOG", "SIFT", "histogram"]
+            available_metrics = ["cosine", "euclidean", "manhattan"]
+        
+        # Explanation of similarity scoring
+        with st.expander("ℹ️ How Similarity Scores Are Calculated", expanded=False):
+            st.markdown("""
+            ### 🧠 **Feature Extraction Methods**
+            
+            **1. CNN (Convolutional Neural Network) Features:**
+            - Divides image into 16×16 pixel patches
+            - Calculates statistical features: mean, std, min, max, median for each patch
+            - Good for: Overall image structure and texture patterns
+            
+            **2. HOG (Histogram of Oriented Gradients):**
+            - Analyzes edge directions and gradients in image regions  
+            - Parameters: orientations (default: 9), pixels per cell (8×8), cells per block (2×2)
+            - Good for: Shape detection and object recognition
+            
+            **3. SIFT (Scale-Invariant Feature Transform):**
+            - Detects distinctive keypoints and creates descriptors
+            - Aggregates up to 100 keypoint descriptors into a single feature vector
+            - Good for: Finding similar objects regardless of rotation/scale
+            
+            **4. Histogram Features:**
+            - Analyzes color distribution across RGB channels
+            - Creates normalized histograms with 64 bins per channel by default
+            - Good for: Color-based similarity comparison
+            
+            ### 📏 **Distance Metrics & Score Calculation**
+            
+            **Cosine Similarity:**
+            - Measures angle between feature vectors (0° = identical, 90° = orthogonal)
+            - Score = (cosine_similarity + 1) ÷ 2  → Range: 0.0 to 1.0
+            - **1.0 = identical images, 0.0 = completely different**
+            
+            **Euclidean Distance:**  
+            - Measures straight-line distance between feature points
+            - Score = exp(-distance ÷ normalization_factor)  → Range: 0.0 to 1.0
+            - **1.0 = identical, lower = more different**
+            
+            **Manhattan Distance:**
+            - Measures sum of absolute differences between features  
+            - Score = exp(-distance ÷ normalization_factor)  → Range: 0.0 to 1.0
+            - **1.0 = identical, lower = more different**
+            
+            ### 🎯 **Score Interpretation**
+            - **0.9 - 1.0:** Very similar (near identical)
+            - **0.7 - 0.9:** Quite similar  
+            - **0.5 - 0.7:** Moderately similar
+            - **0.3 - 0.5:** Somewhat different
+            - **0.0 - 0.3:** Very different
+            """)
+            
+            st.info("💡 **Tip:** Different feature methods work better for different types of images. Try multiple methods to find what works best for your data!")
+        
+        # Comparison mode selection
+        st.markdown("### 🎯 What do you want to compare?")
+        comparison_mode = st.radio(
+            "Choose comparison mode:",
+            ["Compare one image against all others", "Compare two specific images"],
+            key="sim_comparison_mode"
+        )
+        
+        if comparison_mode == "Compare one image against all others":
+            st.markdown("**Mode: Single vs All** - Find images similar to your query image")
+            
+            col1, col2 = st.columns([1, 1])
+            
+            with col1:
+                st.markdown("##### 📷 Query Image (What to search for)")
+                
+                # Query image selector with preview
+                query_idx = st.selectbox(
+                    "Select query image:",
+                    options=list(range(len(images))),
+                    format_func=lambda x: f"Image {x+1}",
+                    key="sim_query_idx",
+                    help="This image will be compared against all other images"
+                )
+                
+                st.image(images[query_idx], caption=f"🔍 Query: Image {query_idx+1}", width=200)
+                st.info(f"Searching for images similar to Image {query_idx+1}")
+                
+                # Search parameters
+                st.markdown("##### ⚙️ Search Settings")
+                
+                # Feature method with descriptions
+                method_options = {
+                    "CNN": "CNN (texture patterns)",
+                    "HOG": "HOG (shapes & edges)",
+                    "SIFT": "SIFT (keypoint features)",
+                    "histogram": "Histogram (color distribution)"
+                }
+                method_display = [method_options.get(method, method) for method in available_methods]
+                selected_method_idx = st.selectbox("Feature Method:", range(len(available_methods)), 
+                                                   format_func=lambda x: method_display[x], key="sim_method")
+                feature_method = available_methods[selected_method_idx]
+                
+                # Distance metric with descriptions
+                metric_options = {
+                    "cosine": "Cosine (angle similarity)",
+                    "euclidean": "Euclidean (straight distance)",
+                    "manhattan": "Manhattan (grid distance)"
+                }
+                metric_display = [metric_options.get(metric, metric) for metric in available_metrics]
+                selected_metric_idx = st.selectbox("Distance Metric:", range(len(available_metrics)),
+                                                   format_func=lambda x: metric_display[x], key="sim_metric")
+                distance_metric = available_metrics[selected_metric_idx]
+                max_results = st.slider("Max Results:", 1, min(20, len(images)-1), 5, key="sim_max_results")
+                
+                # Advanced parameters
+                with st.expander("🔧 Advanced Parameters"):
+                    use_threshold = st.checkbox("Use similarity threshold", key="sim_use_threshold")
+                    threshold = st.slider("Threshold:", 0.0, 1.0, 0.5, 0.01, key="sim_threshold") if use_threshold else None
+                    
+                    if feature_method == "HOG":
+                        st.markdown("**HOG Parameters:**")
+                        hog_orientations = st.slider("Orientations:", 1, 32, 9, key="sim_hog_orient")
+                    else:
+                        hog_orientations = None
+                    
+                    if feature_method == "histogram":
+                        st.markdown("**Histogram Parameters:**")
+                        hist_bins = st.slider("Bins:", 8, 256, 64, key="sim_hist_bins")
+                    else:
+                        hist_bins = None
+            
+            with col2:
+                st.markdown("##### 📊 Search Results")
+                
+                # Performance optimization
+                if st.button("🚀 Precompute Features (Recommended)", key="sim_precompute"):
+                    with st.spinner("Precomputing features for faster searches..."):
+                        try:
+                            result = precompute_similarity_features(feature_method=feature_method)
+                            st.success(f"✅ {result.get('message', 'Features precomputed successfully!')}")
+                        except Exception as e:
+                            st.error(f"❌ Precompute failed: {e}")
+                
+                # Main search button
+                if st.button("🔍 Find Similar Images", type="primary", key="sim_search_btn", use_container_width=True):
+                    with st.spinner(f"Searching for images similar to Image {query_idx+1}..."):
+                        try:
+                            # Build search parameters
+                            search_params = {
+                                "query_image_index": query_idx,
+                                "feature_method": feature_method,
+                                "distance_metric": distance_metric,
+                                "max_results": max_results,
+                            }
+                            
+                            if use_threshold and threshold is not None:
+                                search_params["threshold"] = threshold
+                            if feature_method == "HOG" and hog_orientations:
+                                search_params["hog_orientations"] = hog_orientations
+                            if feature_method == "histogram" and hist_bins:
+                                search_params["hist_bins"] = hist_bins
+                            
+                            # Perform search
+                            results = similarity_search(**search_params)
+                            similar_images = results.get("similar_images", [])
+                            
+                            if not similar_images:
+                                st.warning("No similar images found. Try adjusting parameters or threshold.")
+                            else:
+                                st.success(f"🎉 Found {len(similar_images)} similar images!")
+                                
+                                # Display results
+                                for i, img_data in enumerate(similar_images[:6]):
+                                    image_id = img_data["image_id"]
+                                    similarity_score = img_data["similarity_score"]
+                                    
+                                    # Find image index
+                                    image_idx = None
+                                    if hasattr(st.session_state, 'uploaded_image_ids') and st.session_state.uploaded_image_ids:
+                                        try:
+                                            image_idx = st.session_state.uploaded_image_ids.index(image_id)
+                                        except (ValueError, AttributeError):
+                                            pass
+                                    
+                                    # Display result
+                                    result_col1, result_col2 = st.columns([1, 2])
+                                    with result_col1:
+                                        if image_idx is not None and image_idx < len(images):
+                                            st.image(images[image_idx], width=80)
+                                        else:
+                                            st.write("📷")
+                                    
+                                    with result_col2:
+                                        if image_idx is not None:
+                                            st.write(f"**Image {image_idx + 1}** ({image_id})")
+                                        else:
+                                            st.write(f"**{image_id}**")
+                                        st.metric("Similarity", f"{similarity_score:.3f}", help="Higher = more similar")
+                                    
+                                    if i < len(similar_images) - 1:
+                                        st.markdown("---")
+                                
+                                # Detailed results
+                                with st.expander(f"📋 All {len(similar_images)} Results"):
+                                    import pandas as pd
+                                    df = pd.DataFrame(similar_images)
+                                    df['similarity_score'] = df['similarity_score'].round(4)
+                                    df['distance'] = df['distance'].round(4)
+                                    st.dataframe(df, use_container_width=True)
+                        
+                        except Exception as e:
+                            error_msg = str(e)
+                            if "list index out of range" in error_msg:
+                                st.error("❌ Image synchronization error detected.")
+                                st.info("💡 The images and their IDs are not properly synchronized. Try re-uploading your images.")
+                                st.info("🔄 Or refresh the page and upload images again.")
+                            elif "422" in error_msg or "Unprocessable Entity" in error_msg:
+                                st.error("❌ Invalid request parameters. Please check your search settings.")
+                                st.info("💡 Try adjusting feature method parameters or contact support.")
+                            elif "400" in error_msg or "query_image_index" in error_msg:
+                                st.error("❌ Invalid query image selection.")
+                                st.info("💡 Make sure you have uploaded images and selected a valid query image.")
+                            elif "404" in error_msg:
+                                st.error("❌ Similarity search service not available.")
+                                st.info("💡 Check if the backend server is running on http://localhost:8000")
+                            elif "500" in error_msg:
+                                st.error("❌ Internal server error occurred.")
+                                st.info("💡 Try precomputing features first or check backend logs.")
+                            else:
+                                st.error(f"❌ Search failed: {error_msg}")
+                                st.info("💡 Please try again or check your connection to the backend.")
+        
+        else:  # Pairwise comparison
+            st.markdown("**Mode: Pairwise Comparison** - Compare two specific images directly")
+            
+            col1, col2, col3 = st.columns([1, 1, 1])
+            
+            with col1:
+                st.markdown("##### 📷 First Image")
+                img1_idx = st.selectbox(
+                    "Select first image:",
+                    options=list(range(len(images))),
+                    format_func=lambda x: f"Image {x+1}",
+                    key="sim_img1_idx"
+                )
+                st.image(images[img1_idx], caption=f"Image {img1_idx+1}", width=150)
+            
+            with col2:
+                st.markdown("##### 📷 Second Image")
+                available_indices = [i for i in range(len(images)) if i != img1_idx]
+                if available_indices:
+                    img2_idx = st.selectbox(
+                        "Select second image:",
+                        options=available_indices,
+                        format_func=lambda x: f"Image {x+1}",
+                        key="sim_img2_idx"
+                    )
+                    st.image(images[img2_idx], caption=f"Image {img2_idx+1}", width=150)
+                else:
+                    st.warning("Need at least 2 images for pairwise comparison")
+                    img2_idx = None
+            
+            with col3:
+                st.markdown("##### ⚙️ Comparison Settings")
+                
+                # Feature method with descriptions for pairwise
+                method_options = {
+                    "CNN": "CNN (texture patterns)",
+                    "HOG": "HOG (shapes & edges)", 
+                    "SIFT": "SIFT (keypoint features)",
+                    "histogram": "Histogram (color distribution)"
+                }
+                method_display = [method_options.get(method, method) for method in available_methods]
+                selected_method_pair_idx = st.selectbox("Feature Method:", range(len(available_methods)),
+                                                        format_func=lambda x: method_display[x], key="sim_method_pair")
+                feature_method_pair = available_methods[selected_method_pair_idx]
+                
+                # Distance metric with descriptions for pairwise
+                metric_options = {
+                    "cosine": "Cosine (angle similarity)",
+                    "euclidean": "Euclidean (straight distance)",
+                    "manhattan": "Manhattan (grid distance)"
+                }
+                metric_display = [metric_options.get(metric, metric) for metric in available_metrics]
+                selected_metric_pair_idx = st.selectbox("Distance Metric:", range(len(available_metrics)),
+                                                        format_func=lambda x: metric_display[x], key="sim_metric_pair") 
+                distance_metric_pair = available_metrics[selected_metric_pair_idx]
+                
+                if img2_idx is not None and st.button("🔍 Compare Images", type="primary", key="sim_compare_btn"):
+                    with st.spinner(f"Comparing Image {img1_idx+1} vs Image {img2_idx+1}..."):
+                        try:
+                            # Use the first image as query and search for the second
+                            search_params = {
+                                "query_image_index": img1_idx,
+                                "feature_method": feature_method_pair,
+                                "distance_metric": distance_metric_pair,
+                                "max_results": len(images),
+                            }
+                            
+                            results = similarity_search(**search_params)
+                            similar_images = results.get("similar_images", [])
+                            
+                            # Find the second image in results (IDs should now be synchronized)
+                            uploaded_ids = st.session_state.get("uploaded_image_ids", [])
+                            if img2_idx < len(uploaded_ids):
+                                img2_id = uploaded_ids[img2_idx]
+                                similarity_result = next((img for img in similar_images if img["image_id"] == img2_id), None)
+                                
+                                if similarity_result:
+                                    similarity_score = similarity_result["similarity_score"]
+                                    st.metric("🎯 Similarity Score", f"{similarity_score:.4f}", help="0 = completely different, 1 = identical")
+                                    
+                                    if similarity_score > 0.8:
+                                        st.success(f"🎉 Very similar images! (Score: {similarity_score:.3f})")
+                                    elif similarity_score > 0.6:
+                                        st.info(f"🤔 Moderately similar images. (Score: {similarity_score:.3f})")
+                                    else:
+                                        st.warning(f"🤷 Images are quite different. (Score: {similarity_score:.3f})")
+                                else:
+                                    st.error("❌ Could not find the second image in similarity results.")
+                                    st.info("💡 This might be a backend issue. Try refreshing or re-uploading images.")
+                            else:
+                                st.info("🔄 Images are being synchronized. Please try the comparison again.")
+                        
+                        except Exception as e:
+                            error_msg = str(e)
+                            if "list index out of range" in error_msg:
+                                st.error("❌ Image synchronization error detected.")
+                                st.info("💡 The images and their IDs are not properly synchronized. Try re-uploading your images.")
+                                st.info("🔄 Or refresh the page and upload images again.")
+                            elif "422" in error_msg or "Unprocessable Entity" in error_msg:
+                                st.error("❌ Invalid comparison parameters.")
+                                st.info("💡 Try adjusting feature method parameters or contact support.")
+                            elif "400" in error_msg or "query_image_index" in error_msg:
+                                st.error("❌ Invalid image selection for comparison.")
+                                st.info("💡 Make sure you have selected two different valid images.")
+                            elif "404" in error_msg:
+                                st.error("❌ Similarity search service not available.")
+                                st.info("💡 Check if the backend server is running on http://localhost:8000")
+                            elif "500" in error_msg:
+                                st.error("❌ Internal server error during comparison.")
+                                st.info("💡 Try precomputing features first or check backend logs.")
+                            else:
+                                st.error(f"❌ Comparison failed: {error_msg}")
+                                st.info("💡 Please try again or check your connection to the backend.")
+        
+        # Help section
+        st.markdown("---")
+        with st.expander("ℹ️ How to Use Similarity Search"):
+            st.markdown("""
+            **🎯 Comparison Modes:**
+            - **Single vs All**: Select one query image and find all similar images in your dataset
+            - **Pairwise**: Compare exactly two images to see how similar they are
+            
+            **🧠 Feature Methods:**
+            - **CNN**: Best general-purpose method, works well for most images
+            - **HOG**: Good for shapes, objects, and structural patterns
+            - **SIFT**: Best for images with distinctive keypoints, robust to rotation/scaling
+            - **Histogram**: Good for color-based similarity
+            
+            **📊 Distance Metrics:**
+            - **Cosine**: Measures angle between feature vectors (recommended)
+            - **Euclidean**: Direct distance in feature space
+            - **Manhattan**: City-block distance, less sensitive to outliers
+            
+            **💡 Tips:**
+            - Use "Precompute Features" for faster searches when you have many images
+            - Try different feature methods to find what works best for your images
+            - Adjust similarity threshold to filter results (higher = more strict)
+            """)
 
-        # --- GLCM Haralick for current uploaded images (table output) ---
-        st.markdown("##### Analyze Texture Features (GLCM Haralick)")
+    # --- Haralick Texture ---
+    with tab5:
+        st.subheader("Haralick Texture Tools")
         st.caption(
             "Compute Haralick texture features directly from the images you uploaded above. "
             "Choose distances, angles, quantization levels, and (optionally) resize for faster or consistent results."
@@ -510,8 +954,125 @@ def render_feature_selection():
             for i, p in enumerate(preds):
                 st.write(f"Test Image {i+1}: {p}")
 
-    # --- Co-Occurrence Texture ---
+    # --- Haralick Texture ---
     with tab5:
+        st.subheader("Haralick Texture Tools")
+
+        # --- GLCM Haralick for current uploaded images (table output) ---
+        st.markdown("##### Analyze Texture Features (GLCM Haralick)")
+        st.caption(
+            "Compute Haralick texture features directly from the images you uploaded above. "
+            "Choose distances, angles, quantization levels, and (optionally) resize for faster or consistent results."
+        )
+        col_a, col_b = st.columns(2)
+        with col_a:
+            # Select images
+            use_all = st.checkbox("Use all images", value=True, key="har_use_all_moved")
+            if use_all:
+                image_indices = list(range(len(images)))
+            else:
+                image_indices = st.multiselect(
+                    "Select images",
+                    options=list(range(len(images))),
+                    format_func=lambda x: f"Image {x+1}",
+                    key="har_img_indices_moved",
+                )
+            # Levels
+            levels = st.selectbox("Quantization levels", [16, 32, 64, 128, 256], index=4, key="har_levels_moved")
+            # Distances
+            distances = st.multiselect("Distances (pixels)", [1, 2, 3, 5], default=[1, 2], key="har_distances_moved")
+        with col_b:
+            # Angles (radians)
+            angle_map = {
+                "0°": 0,
+                "45°": np.pi / 4,
+                "90°": np.pi / 2,
+                "135°": 3 * np.pi / 4,
+            }
+            selected_angle_names = st.multiselect(
+                "Angles",
+                options=list(angle_map.keys()),
+                default=["0°", "90°"],
+                key="har_angles_moved"
+            )
+            angles = [angle_map[name] for name in selected_angle_names]
+            # Resize option
+            resize_enabled = st.checkbox("Resize images", value=False, key="har_resize_enabled_moved")
+            if resize_enabled:
+                resize_width = st.number_input("Width", min_value=32, max_value=512, value=128, key="har_resize_width_moved")
+                resize_height = st.number_input("Height", min_value=32, max_value=512, value=128, key="har_resize_height_moved")
+                resize_dims = [resize_width, resize_height]
+            else:
+                resize_dims = None
+
+        if st.button("Extract Haralick (Table)", key="btn_haralick_table_moved"):
+            if image_indices and distances and angles:
+                params = {
+                    "image_indices": image_indices,
+                    "distances": distances,
+                    "angles": angles,
+                    "levels": levels,
+                }
+                if resize_dims:
+                    params["resize_dimensions"] = resize_dims
+
+                try:
+                    result = extract_haralick_features(params)
+                    # 'result' should have columns, rows, feature_names, etc.
+                    columns = result.get("columns", [])
+                    rows = result.get("rows", [])
+                    feature_names = result.get("feature_names", [])
+
+                    if columns and rows:
+                        st.success(f"Extracted {len(rows)} feature vectors with {len(columns)-1} features each.")
+                        # Build DataFrame
+                        import pandas as pd
+                        df = pd.DataFrame(rows, columns=columns)
+                        st.dataframe(df)
+
+                        # CSV download
+                        csv_bytes = _to_csv_bytes(columns, rows)
+                        st.download_button(
+                            "Download Haralick CSV",
+                            csv_bytes,
+                            file_name="haralick_features.csv",
+                            mime="text/csv",
+                        )
+
+                        # Show feature names
+                        if feature_names:
+                            with st.expander("Feature Descriptions"):
+                                for fname in feature_names:
+                                    st.write(f"- {fname}")
+                    else:
+                        st.warning("No features extracted. Check your parameters.")
+                except Exception as e:
+                    st.error(f"Haralick extraction failed: {e}")
+            else:
+                st.error("Please select images, distances, and angles.")
+
+        # --- Train/Predict workflow (unchanged logic, just relabeled) ---
+        st.markdown("---")
+        st.markdown("##### Train/Test Workflow (Upload External Images)")
+        st.caption("Upload separate training images + labels, then test images for prediction.")
+        col_train, col_test = st.columns(2)
+        with col_train:
+            train_imgs = st.file_uploader("Training Images", type=["png", "jpg", "jpeg"], accept_multiple_files=True, key="har_train_moved")
+            train_csv = st.file_uploader("Training Labels (CSV)", type="csv", key="har_train_csv_moved")
+        with col_test:
+            test_imgs = st.file_uploader("Test Images", type=["png", "jpg", "jpeg"], accept_multiple_files=True, key="har_test_moved")
+
+        # Keep key the same; only label changes
+        if st.button("Train & Predict", key="btn_haralick_moved"):
+            labels, preds = extract_haralick_texture(
+                {"train_images": train_imgs, "train_labels": train_csv, "test_images": test_imgs}
+            )
+            st.write("Predicted Labels:")
+            for i, p in enumerate(preds):
+                st.write(f"Test Image {i+1}: {p}")
+
+    # --- Co-Occurrence Texture ---
+    with tab6:
         st.subheader("Co-Occurrence Texture Features")
         tex_idx = st.selectbox(
             "Select Image", options=list(range(len(images))), format_func=lambda x: f"Image {x+1}", key="tex_img_idx"
@@ -522,7 +1083,7 @@ def render_feature_selection():
             st.write(features)
 
     # --- Local Binary Patterns (LBP) ---
-    with tab6:
+    with tab7:
         st.subheader("Local Binary Patterns (LBP)")
 
         st.caption(
@@ -618,7 +1179,7 @@ def render_feature_selection():
                         st.error(f"LBP computation failed: {e}")
 
     # --- NEW: Contour Extraction (dedicated tab) ---
-    with tab7:
+    with tab8:
         st.subheader("Contour Extraction")
         st.caption(
             "Extract contours (closed shapes or outlines) from a binary or grayscale version of your image using "
@@ -691,7 +1252,7 @@ def render_feature_selection():
     # ----------------------------------------------------------------------
 #   Tab 8 – SIFT & Edge Detection
 # ----------------------------------------------------------------------
-    with tab8:
+    with tab9:
         st.subheader("SIFT & Edge Detection")
         st.caption(
             """

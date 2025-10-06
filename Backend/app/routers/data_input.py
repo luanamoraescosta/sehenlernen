@@ -110,3 +110,25 @@ async def extract_from_csv(file: UploadFile = File(...)):
     except Exception as e:
         logging.exception("Extractor failed")
         raise HTTPException(status_code=500, detail="Internal server error during extraction")
+
+
+@router.get("/current-image-ids")
+async def get_current_image_ids():
+    """Get the current image IDs in the order they are stored in the backend."""
+    try:
+        image_ids = data_service.get_all_image_ids()
+        return {"image_ids": image_ids}
+    except Exception as e:
+        logging.exception("Failed to get image IDs")
+        raise HTTPException(status_code=500, detail="Failed to retrieve image IDs")
+
+
+@router.delete("/clear-all-images")
+async def clear_all_images():
+    """Clear all stored images from the backend."""
+    try:
+        data_service.clear_all_images()
+        return {"message": "All images cleared successfully"}
+    except Exception as e:
+        logging.exception("Failed to clear images")
+        raise HTTPException(status_code=500, detail="Failed to clear images")

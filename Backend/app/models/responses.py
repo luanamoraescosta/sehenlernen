@@ -45,6 +45,12 @@ class CooccurrenceResponse(BaseModel):
     features: List[float]
 
 
+class SimilaritySearchResponse(BaseModel):
+    similar_images: List[Dict[str, Any]]  # [{"image_id": "...", "similarity_score": 0.95, "distance": 0.05}, ...]
+    query_features: Optional[List[float]] = None  # Optional: return query image features
+    computation_time: Optional[float] = None  # Optional: processing time in seconds
+
+
 class StatsAnalysisResponse(BaseModel):
     status: str
     input: Dict[str, Any]

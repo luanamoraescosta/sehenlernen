@@ -29,6 +29,17 @@ col_mapping = {}
 
 # ---- Image upload / metadata config ----
 
+async def save_uploaded_image(file: UploadFile) -> str:
+    """
+    Save a single uploaded image file to disk and return the image ID (filename).
+    """
+    contents = await file.read()
+    filename = file.filename
+    file_path = IMAGE_DIR / filename
+    with open(file_path, "wb") as f:
+        f.write(contents)
+    return filename
+
 async def save_uploaded_images(files: list[UploadFile]) -> list[str]:
     """
     Save uploaded image files to disk and return list of image IDs (filenames).
@@ -300,3 +311,18 @@ async def extract_images_from_csv(file: UploadFile) -> dict:
         "image_ids": image_ids,
         "errors": errors,
     }
+
+
+def clear_all_images() -> None:
+    """Clear all stored images and reset metadata."""
+    global metadata_df, image_id_col, col_mapping
+    
+    # Clear all image files
+    for file_path in IMAGE_DIR.glob("*"):
+        if file_path.is_file():
+            file_path.unlink()
+    
+    # Reset metadata
+    metadata_df = None
+    image_id_col = None
+    col_mapping = {}
