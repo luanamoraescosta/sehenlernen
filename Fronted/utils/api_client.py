@@ -618,3 +618,26 @@ def extract_image_embedding(params):
     resp = requests.post(url, json=params)
     resp.raise_for_status()
     return resp.json()
+
+
+# ----------------------------------------------------------------------
+# Classifier training & prediction
+# ----------------------------------------------------------------------
+def train_classifier(params):
+    """
+    POST /features/train-classifier with a payload matching ClassifierTrainingRequest.
+    """
+    url = f"{_get_base_url()}/features/train-classifier"
+    resp = requests.post(url, json=params)
+    resp.raise_for_status()
+    return resp.json()
+
+
+def predict_classifier(params):
+    """
+    POST /features/predict-classifier with a payload matching ClassifierPredictionRequest.
+    """
+    url = f"{_get_base_url()}/features/predict-classifier"
+    resp = requests.post(url, json=params)
+    resp.raise_for_status()
+    return resp.json()

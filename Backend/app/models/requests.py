@@ -195,3 +195,73 @@ class SimilaritySearchRequest(BaseModel):
     # Histogram parameters
     hist_bins: Optional[int] = Field(default=64, description="Number of bins for color histogram")
     hist_channels: Optional[List[int]] = Field(default=[0, 1, 2], description="Color channels to use for histogram")
+
+
+# ---- Classifier training & prediction ----
+class LabeledSample(BaseModel):
+    """Single training sample referencing an uploaded image by index."""
+    image_index: int = Field(..., ge=0, description="Zero-based image index")
+    label: str = Field(..., description="Target class label")
+
+
+class EvaluationSample(BaseModel):
+    """Sample for evaluation/prediction. Label optional for inference."""
+    image_index: int = Field(..., ge=0, description="Zero-based image index")
+    label: Optional[str] = Field(
+        default=None,
+        description="Optional ground-truth label (used for evaluating accuracy)"
+    )
+
+
+class HOGOptions(BaseModel):
+    orientations: int = Field(default=9, ge=1, le=24)
+    pixels_per_cell: List[int] = Field(default_factory=lambda: [8, 8], min_items=2, max_items=2)
+    cells_per_block: List[int] = Field(default_factory=lambda: [2, 2], min_items=2, max_items=2)
+    resize_width: int = Field(default=128, ge=8, le=2048)
+    resize_height: int = Field(default=128, ge=8, le=2048)
+    block_norm: Literal["L2-Hys", "L1", "L1-sqrt", "L2"] = "L2-Hys"
+
+
+class LBPOptions(BaseModel):
+    radius: int = Field(default=1, ge=1, le=16)
+    num_neighbors: int = Field(default=8, ge=4, le=32)
+    method: Literal["default", "ror", "uniform", "var"] = "uniform"
+    normalize: bool = True
+
+
+class ClassifierTrainingRequest(BaseModel):
+    """
+    Train an ML classifier using features derived from uploaded images.
+    """
+    feature_type: Literal["hog", "lbp", "embedding"]
+    classifier_type: Literal["svm", "knn", "logistic"]
+    training_samples: List[LabeledSample] = Field(..., min_items=1)
+    test_samples: Optional[List[EvaluationSample]] = None
+    hyperparameters: Optional[Dict[str, Any]] = None
+    test_size: float = Field(default=0.2, ge=0.0, lt=1.0)
+    random_state: Optional[int] = Field(default=42, description="Random seed for train/validation split")
+    hog_options: Optional[HOGOptions] = None
+    lbp_options: Optional[LBPOptions] = None
+    embedding_model: Optional[str] = Field(default="resnet50", description="Pretrained model for embeddings")
+    training_features: Optional[List[List[float]]] = Field(
+        default=None,
+        description="Optional precomputed feature vectors aligned with training_samples",
+    )
+    test_features: Optional[List[List[float]]] = Field(
+        default=None,
+        description="Optional precomputed feature vectors aligned with test_samples",
+    )
+    return_probabilities: bool = True
+
+
+class ClassifierPredictionRequest(BaseModel):
+    """
+    Run inference using a previously trained classifier.
+    """
+    model_id: str = Field(..., description="Identifier returned by the training endpoint")
+    samples: List[EvaluationSample] = Field(..., min_items=1)
+    feature_vectors: Optional[List[List[float]]] = Field(
+        default=None,
+        description="Optional feature vectors aligned with samples (bypass image-based extraction)",
+    )
+    return_probabilities: bool = True

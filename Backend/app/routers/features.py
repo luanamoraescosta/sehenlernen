@@ -19,6 +19,8 @@ from app.services.feature_service import (
     extract_contours_service,           # Contour extraction
     extract_sift_service,               # SIFT endpoint (multi/single)
     extract_edges_service,              # Edge detection endpoint
+    train_classifier_service,
+    predict_classifier_service,
 )
 
 from app.models.requests import (
@@ -29,6 +31,8 @@ from app.models.requests import (
     FeatureBaseRequest,                 # base selector for single/multi/all image ops
     SiftResponse,                       # (imported for consistency; response returned as dict)
     EdgeResponse,                       # (imported for consistency; response returned as dict)
+    ClassifierTrainingRequest,
+    ClassifierPredictionRequest,
 )
 
 router = APIRouter()
@@ -330,3 +334,37 @@ def extract_embedding(request: EmbeddingRequest):
         logging.exception("Failed to extract embeddings")
         raise HTTPException(status_code=500, detail=str(e))
 
+
+@router.post("/train-classifier")
+def train_classifier(request: ClassifierTrainingRequest):
+    """
+    Train a traditional ML classifier (SVM, k-NN, Logistic Regression) on features
+    derived from uploaded images (HOG, LBP, or deep embeddings).
+    """
+    try:
+        result = train_classifier_service(request)
+        return result
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except HTTPException:
+        raise
+    except Exception:
+        logging.exception("Failed to train classifier")
+        raise HTTPException(status_code=500, detail="Internal server error during classifier training")
+
+
+@router.post("/predict-classifier")
+def predict_classifier(request: ClassifierPredictionRequest):
+    """
+    Run inference using a previously trained classifier and optional ground-truth labels.
+    """
+    try:
+        result = predict_classifier_service(request)
+        return result
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except HTTPException:
+        raise
+    except Exception:
+        logging.exception("Failed to run classifier prediction")
+        raise HTTPException(status_code=500, detail="Internal server error during classifier prediction")

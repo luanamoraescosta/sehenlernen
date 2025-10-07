@@ -76,3 +76,36 @@ class ContourResponse(BaseModel):
     areas: Optional[List[float]] = None
     hierarchy: Optional[List[Any]] = None
     visualization: Optional[str] = None
+
+
+# ---- Classifier training & prediction ----
+class ClassifierMetrics(BaseModel):
+    accuracy: Optional[float] = None
+    classification_report: Optional[Dict[str, Any]] = None
+    confusion_matrix: Optional[List[List[int]]] = None
+
+
+class PredictionResult(BaseModel):
+    image_index: int
+    image_id: Optional[str] = None
+    prediction: str
+    probabilities: Optional[Dict[str, float]] = None
+    actual_label: Optional[str] = None
+
+
+class ClassifierTrainingResponse(BaseModel):
+    model_id: str
+    feature_type: str
+    classifier_type: str
+    num_training_samples: int
+    feature_vector_length: int
+    train_metrics: ClassifierMetrics
+    validation_metrics: Optional[ClassifierMetrics] = None
+    test_predictions: Optional[List[PredictionResult]] = None
+    test_metrics: Optional[ClassifierMetrics] = None
+
+
+class ClassifierPredictionResponse(BaseModel):
+    model_id: str
+    predictions: List[PredictionResult]
+    metrics: Optional[ClassifierMetrics] = None

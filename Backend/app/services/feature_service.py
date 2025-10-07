@@ -1,5 +1,6 @@
 import io
 import base64
+import uuid
 import numpy as np
 import matplotlib
 matplotlib.use("Agg")  # <- non-GUI backend to avoid macOS NSWindow crash
@@ -8,14 +9,27 @@ from PIL import Image
 from sklearn.preprocessing import StandardScaler
 from sklearn.decomposition import PCA
 from sklearn.cluster import KMeans
+from sklearn.model_selection import train_test_split
+from sklearn.svm import SVC
+from sklearn.neighbors import KNeighborsClassifier
+from sklearn.linear_model import LogisticRegression
+from sklearn.metrics import accuracy_score, classification_report, confusion_matrix
+from sklearn.pipeline import Pipeline
 from skimage.transform import resize as sk_resize
 import cv2
 import pandas as pd
-from typing import Any, Optional, List, Dict, Tuple
+from typing import Any, Optional, List, Dict, Tuple, Set
 from fastapi import UploadFile, HTTPException
 from io import BytesIO
 
 from app.services.data_service import load_image, get_all_image_ids, metadata_df, image_id_col
+
+# Persistent in-memory storage for trained classifiers (cleared on process restart).
+MODEL_REGISTRY: Dict[str, Dict[str, Any]] = {}
+from app.models.requests import (
+    ClassifierTrainingRequest,
+    ClassifierPredictionRequest,
+)
 
 # ---------------------------------------------------------
 # Robust GLCM imports across scikit-image versions/builds
@@ -871,4 +885,460 @@ def extract_embedding_service(
         "model_name": model_name,
         "embedding_dim": embedding_dim,
         "num_images": len(embeddings_list)
+    }
+
+
+# --------------------------
+# Classifier Training & Prediction
+# --------------------------
+def _unique_preserve_order(values: List[int]) -> List[int]:
+    seen: Set[int] = set()
+    ordered: List[int] = []
+    for v in values:
+        if v not in seen:
+            seen.add(v)
+            ordered.append(v)
+    return ordered
+
+
+def _coerce_to_serializable(data: Any) -> Any:
+    if isinstance(data, (np.floating,)):
+        return float(data)
+    if isinstance(data, (np.integer,)):
+        return int(data)
+    if isinstance(data, np.ndarray):
+        return data.tolist()
+    if isinstance(data, dict):
+        return {k: _coerce_to_serializable(v) for k, v in data.items()}
+    if isinstance(data, list):
+        return [_coerce_to_serializable(v) for v in data]
+    return data
+
+
+def _compute_hog_feature_vector(
+    image_index: int,
+    img_ids: List[str],
+    orientations: int,
+    pixels_per_cell: Tuple[int, int],
+    cells_per_block: Tuple[int, int],
+    resize_width: int,
+    resize_height: int,
+    block_norm: str,
+) -> np.ndarray:
+    if image_index < 0 or image_index >= len(img_ids):
+        raise IndexError(f"image_index {image_index} out of range for HOG computation")
+    img_bytes = load_image(img_ids[image_index])
+    pil = Image.open(io.BytesIO(img_bytes)).convert("L")
+    if resize_width and resize_height:
+        pil = pil.resize((resize_width, resize_height), Image.BILINEAR)
+    arr = np.asarray(pil, dtype=np.float32) / 255.0
+    features = hog(
+        arr,
+        orientations=orientations,
+        pixels_per_cell=pixels_per_cell,
+        cells_per_block=cells_per_block,
+        block_norm=block_norm,
+        transform_sqrt=True,
+        feature_vector=True,
+    )
+    return features.astype(np.float32)
+
+
+def _compute_lbp_feature_vector(
+    image_index: int,
+    img_ids: List[str],
+    radius: int,
+    num_neighbors: int,
+    method: str,
+    normalize: bool,
+) -> np.ndarray:
+    if image_index < 0 or image_index >= len(img_ids):
+        raise IndexError(f"image_index {image_index} out of range for LBP computation")
+    img_bytes = load_image(img_ids[image_index])
+    pil = Image.open(io.BytesIO(img_bytes)).convert("RGB")
+    arr = np.array(pil)
+    gray = _to_grayscale_uint(arr)
+    lbp = local_binary_pattern(gray, P=num_neighbors, R=radius, method=method)
+    bin_edges = _lbp_bins_edges(method, num_neighbors)
+    hist, _ = np.histogram(lbp.ravel(), bins=bin_edges)
+    if normalize:
+        hist = _normalize_hist(hist)
+    return hist.astype(np.float32)
+
+
+def _compute_features_for_indices(
+    feature_type: str,
+    indices: List[int],
+    img_ids: List[str],
+    hog_options: Dict[str, Any],
+    lbp_options: Dict[str, Any],
+    embedding_model: Optional[str],
+) -> Dict[int, np.ndarray]:
+    if not indices:
+        return {}
+
+    unique_indices = _unique_preserve_order(indices)
+    features: Dict[int, np.ndarray] = {}
+
+    if feature_type == "hog":
+        orientations = int(hog_options.get("orientations", 9))
+        pixels_per_cell = hog_options.get("pixels_per_cell", [8, 8])
+        cells_per_block = hog_options.get("cells_per_block", [2, 2])
+        resize_width = int(hog_options.get("resize_width", 128))
+        resize_height = int(hog_options.get("resize_height", 128))
+        block_norm = hog_options.get("block_norm", "L2-Hys")
+        ppc = (int(pixels_per_cell[0]), int(pixels_per_cell[1]))
+        cpb = (int(cells_per_block[0]), int(cells_per_block[1]))
+
+        for idx in unique_indices:
+            features[idx] = _compute_hog_feature_vector(
+                image_index=idx,
+                img_ids=img_ids,
+                orientations=orientations,
+                pixels_per_cell=ppc,
+                cells_per_block=cpb,
+                resize_width=resize_width,
+                resize_height=resize_height,
+                block_norm=block_norm,
+            )
+
+    elif feature_type == "lbp":
+        radius = int(lbp_options.get("radius", 1))
+        num_neighbors = int(lbp_options.get("num_neighbors", 8))
+        method = lbp_options.get("method", "uniform")
+        normalize = bool(lbp_options.get("normalize", True))
+
+        for idx in unique_indices:
+            features[idx] = _compute_lbp_feature_vector(
+                image_index=idx,
+                img_ids=img_ids,
+                radius=radius,
+                num_neighbors=num_neighbors,
+                method=method,
+                normalize=normalize,
+            )
+
+    elif feature_type == "embedding":
+        model_name = embedding_model or "resnet50"
+        embedding_result = extract_embedding_service(
+            image_indices=unique_indices,
+            use_all_images=False,
+            model_name=model_name,
+        )
+        embeddings = embedding_result.get("embeddings", [])
+        if len(embeddings) != len(unique_indices):
+            raise ValueError("Failed to compute embeddings for all requested images.")
+        for idx, vec in zip(unique_indices, embeddings):
+            features[idx] = np.asarray(vec, dtype=np.float32)
+    else:
+        raise ValueError(f"Unsupported feature_type '{feature_type}'.")
+
+    return features
+
+
+def _assemble_feature_matrix(indices: List[int], feature_lookup: Dict[int, np.ndarray]) -> np.ndarray:
+    rows: List[np.ndarray] = []
+    for idx in indices:
+        vec = feature_lookup.get(idx)
+        if vec is None:
+            raise ValueError(f"Missing feature vector for image index {idx}")
+        rows.append(np.asarray(vec, dtype=np.float32).ravel())
+
+    if not rows:
+        raise ValueError("No feature vectors available to assemble matrix.")
+
+    return np.stack(rows, axis=0)
+
+
+def _build_classifier(classifier_type: str, hyperparameters: Optional[Dict[str, Any]]) -> Any:
+    params = dict(hyperparameters or {})
+    if classifier_type == "svm":
+        base = {"kernel": "rbf", "C": 1.0, "probability": True}
+        base.update(params)
+        return SVC(**base)
+    if classifier_type == "knn":
+        base = {"n_neighbors": 5}
+        base.update(params)
+        return KNeighborsClassifier(**base)
+    if classifier_type == "logistic":
+        base = {"max_iter": 1000}
+        base.update(params)
+        return LogisticRegression(**base)
+    raise ValueError(f"Unsupported classifier_type '{classifier_type}'.")
+
+
+def _compute_metrics(y_true: List[str], y_pred: List[str]) -> Dict[str, Any]:
+    if not y_true:
+        return {"accuracy": None, "classification_report": None, "confusion_matrix": None}
+
+    metrics: Dict[str, Any] = {
+        "accuracy": None,
+        "classification_report": None,
+        "confusion_matrix": None,
+    }
+    try:
+        metrics["accuracy"] = float(accuracy_score(y_true, y_pred))
+    except Exception:
+        metrics["accuracy"] = None
+
+    try:
+        report = classification_report(y_true, y_pred, output_dict=True)
+        metrics["classification_report"] = _coerce_to_serializable(report)
+    except Exception:
+        metrics["classification_report"] = None
+
+    try:
+        metrics["confusion_matrix"] = confusion_matrix(y_true, y_pred).tolist()
+    except Exception:
+        metrics["confusion_matrix"] = None
+
+    return metrics
+
+
+def _sanitize_metrics(metrics: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+    if not metrics:
+        return None
+    if all(value is None for value in metrics.values()):
+        return None
+    return metrics
+
+
+def train_classifier_service(request: ClassifierTrainingRequest) -> Dict[str, Any]:
+    img_ids = get_all_image_ids()
+    if not img_ids:
+        raise ValueError("No images available. Please upload images before training a classifier.")
+
+    train_indices = [sample.image_index for sample in request.training_samples]
+    if any(idx < 0 or idx >= len(img_ids) for idx in train_indices):
+        raise IndexError("One or more training image indices are out of range.")
+
+    unique_labels = {sample.label for sample in request.training_samples}
+    if len(unique_labels) < 2:
+        raise ValueError("At least two distinct labels are required for training.")
+
+    feature_lookup: Dict[int, np.ndarray] = {}
+
+    if request.training_features:
+        if len(request.training_features) != len(request.training_samples):
+            raise ValueError("training_features must align with training_samples.")
+        for sample, vec in zip(request.training_samples, request.training_features):
+            feature_lookup[sample.image_index] = np.asarray(vec, dtype=np.float32)
+
+    if request.test_samples and request.test_features:
+        if len(request.test_features) != len(request.test_samples):
+            raise ValueError("test_features must align with test_samples.")
+        for sample, vec in zip(request.test_samples, request.test_features):
+            feature_lookup[sample.image_index] = np.asarray(vec, dtype=np.float32)
+
+    indices_needed = list(train_indices)
+    if request.test_samples:
+        indices_needed.extend(sample.image_index for sample in request.test_samples)
+    indices_needed = [idx for idx in indices_needed if idx not in feature_lookup]
+
+    hog_opts = request.hog_options.dict() if request.hog_options else {}
+    lbp_opts = request.lbp_options.dict() if request.lbp_options else {}
+
+    computed = _compute_features_for_indices(
+        feature_type=request.feature_type,
+        indices=indices_needed,
+        img_ids=img_ids,
+        hog_options=hog_opts,
+        lbp_options=lbp_opts,
+        embedding_model=request.embedding_model,
+    )
+    feature_lookup.update(computed)
+
+    X_train_full = _assemble_feature_matrix(train_indices, feature_lookup)
+    y_train_full = np.asarray([sample.label for sample in request.training_samples])
+    feature_vector_length = int(X_train_full.shape[1])
+
+    X_fit = X_train_full
+    y_fit = y_train_full
+    X_val: Optional[np.ndarray] = None
+    y_val: Optional[np.ndarray] = None
+
+    if not request.test_samples and request.test_size > 0.0 and len(request.training_samples) >= 4:
+        stratify = y_train_full if len(np.unique(y_train_full)) > 1 else None
+        try:
+            X_fit, X_val, y_fit, y_val = train_test_split(
+                X_train_full,
+                y_train_full,
+                test_size=request.test_size,
+                random_state=request.random_state,
+                stratify=stratify,
+            )
+        except ValueError:
+            X_fit, y_fit = X_train_full, y_train_full
+            X_val = None
+            y_val = None
+
+    classifier = _build_classifier(request.classifier_type, request.hyperparameters)
+    pipeline = Pipeline([
+        ("scaler", StandardScaler()),
+        ("classifier", classifier),
+    ])
+    pipeline.fit(X_fit, y_fit)
+
+    train_predictions = pipeline.predict(X_train_full)
+    train_metrics = _compute_metrics(
+        [str(label) for label in y_train_full],
+        [str(pred) for pred in train_predictions],
+    )
+
+    validation_metrics: Optional[Dict[str, Any]] = None
+    if X_val is not None and y_val is not None and len(y_val) > 0:
+        val_predictions = pipeline.predict(X_val)
+        validation_metrics = _compute_metrics(
+            [str(label) for label in y_val],
+            [str(pred) for pred in val_predictions],
+        )
+
+    test_predictions_output: Optional[List[Dict[str, Any]]] = None
+    test_metrics: Optional[Dict[str, Any]] = None
+    if request.test_samples:
+        test_indices = [sample.image_index for sample in request.test_samples]
+        if any(idx < 0 or idx >= len(img_ids) for idx in test_indices):
+            raise IndexError("One or more test image indices are out of range.")
+        X_test = _assemble_feature_matrix(test_indices, feature_lookup)
+        test_predictions = pipeline.predict(X_test)
+
+        prob_matrix: Optional[np.ndarray] = None
+        class_labels: List[str] = []
+        if request.return_probabilities and hasattr(pipeline, "predict_proba"):
+            prob_matrix = pipeline.predict_proba(X_test)
+            class_labels = [str(c) for c in pipeline.classes_]
+
+        predictions: List[Dict[str, Any]] = []
+        labeled_true: List[str] = []
+        labeled_pred: List[str] = []
+        for idx, sample in enumerate(request.test_samples):
+            probabilities = None
+            if prob_matrix is not None:
+                probabilities = {
+                    class_labels[j]: float(prob_matrix[idx][j])
+                    for j in range(len(class_labels))
+                }
+            actual_label = sample.label
+            if actual_label is not None:
+                labeled_true.append(str(actual_label))
+                labeled_pred.append(str(test_predictions[idx]))
+
+            predictions.append({
+                "image_index": sample.image_index,
+                "image_id": img_ids[sample.image_index] if sample.image_index < len(img_ids) else None,
+                "prediction": str(test_predictions[idx]),
+                "probabilities": probabilities,
+                "actual_label": str(actual_label) if actual_label is not None else None,
+            })
+
+        test_predictions_output = predictions
+        test_metrics = _compute_metrics(labeled_true, labeled_pred) if labeled_true else None
+
+    model_id = str(uuid.uuid4())
+    MODEL_REGISTRY[model_id] = {
+        "pipeline": pipeline,
+        "feature_type": request.feature_type,
+        "hog_options": hog_opts,
+        "lbp_options": lbp_opts,
+        "embedding_model": request.embedding_model,
+        "feature_vector_length": feature_vector_length,
+    }
+
+    return {
+        "model_id": model_id,
+        "feature_type": request.feature_type,
+        "classifier_type": request.classifier_type,
+        "num_training_samples": len(request.training_samples),
+        "feature_vector_length": feature_vector_length,
+        "train_metrics": train_metrics,
+        "validation_metrics": _sanitize_metrics(validation_metrics),
+        "test_predictions": test_predictions_output,
+        "test_metrics": _sanitize_metrics(test_metrics),
+    }
+
+
+def predict_classifier_service(request: ClassifierPredictionRequest) -> Dict[str, Any]:
+    model_entry = MODEL_REGISTRY.get(request.model_id)
+    if not model_entry:
+        raise ValueError(f"Model '{request.model_id}' not found. Please train the model again.")
+
+    pipeline: Pipeline = model_entry["pipeline"]
+    feature_type: str = model_entry["feature_type"]
+    hog_opts = model_entry.get("hog_options") or {}
+    lbp_opts = model_entry.get("lbp_options") or {}
+    embedding_model = model_entry.get("embedding_model")
+
+    img_ids = get_all_image_ids()
+    if not img_ids:
+        raise ValueError("No images available. Please upload images before running predictions.")
+
+    feature_lookup: Dict[int, np.ndarray] = {}
+    if request.feature_vectors:
+        if len(request.feature_vectors) != len(request.samples):
+            raise ValueError("feature_vectors must align with samples.")
+        for sample, vec in zip(request.samples, request.feature_vectors):
+            feature_lookup[sample.image_index] = np.asarray(vec, dtype=np.float32)
+
+    indices_needed = [
+        sample.image_index for sample in request.samples
+        if sample.image_index not in feature_lookup
+    ]
+
+    computed = _compute_features_for_indices(
+        feature_type=feature_type,
+        indices=indices_needed,
+        img_ids=img_ids,
+        hog_options=hog_opts,
+        lbp_options=lbp_opts,
+        embedding_model=embedding_model,
+    )
+    feature_lookup.update(computed)
+
+    sample_indices = [sample.image_index for sample in request.samples]
+    X = _assemble_feature_matrix(sample_indices, feature_lookup)
+
+    predictions = pipeline.predict(X)
+
+    prob_matrix: Optional[np.ndarray] = None
+    class_labels: List[str] = []
+    if request.return_probabilities and hasattr(pipeline, "predict_proba"):
+        prob_matrix = pipeline.predict_proba(X)
+        class_labels = [str(c) for c in pipeline.classes_]
+
+    results: List[Dict[str, Any]] = []
+    labeled_true: List[str] = []
+    labeled_pred: List[str] = []
+
+    for idx, sample in enumerate(request.samples):
+        if sample.image_index < 0 or sample.image_index >= len(img_ids):
+            raise IndexError(f"Image index {sample.image_index} is out of range.")
+
+        probabilities = None
+        if prob_matrix is not None:
+            probabilities = {
+                class_labels[j]: float(prob_matrix[idx][j])
+                for j in range(len(class_labels))
+            }
+
+        actual_label = sample.label
+        predicted_label = str(predictions[idx])
+
+        if actual_label is not None:
+            labeled_true.append(str(actual_label))
+            labeled_pred.append(predicted_label)
+
+        results.append({
+            "image_index": sample.image_index,
+            "image_id": img_ids[sample.image_index],
+            "prediction": predicted_label,
+            "probabilities": probabilities,
+            "actual_label": str(actual_label) if actual_label is not None else None,
+        })
+
+    metrics = _compute_metrics(labeled_true, labeled_pred) if labeled_true else None
+
+    return {
+        "model_id": request.model_id,
+        "predictions": results,
+        "metrics": _sanitize_metrics(metrics),
     }
