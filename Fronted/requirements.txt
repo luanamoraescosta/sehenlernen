@@ -1,0 +1,8 @@
+# Frontend Requirements
+streamlit>=1.22.0
+requests>=2.28.0
+Pillow>=9.0.0
+numpy>=1.23.0
+matplotlib>=3.5.0
+python-dotenv>=0.21.0
+
